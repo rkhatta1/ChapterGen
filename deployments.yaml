@@ -1,0 +1,212 @@
+---
+# Deployment for Audio Transcription Worker
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: transcription-bridge-deployment
+  labels:
+    app: transcription-bridge
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: transcription-bridge
+  template:
+    metadata:
+      labels:
+        app: transcription-bridge
+    spec:
+      containers:
+      - name: transcription-bridge-service-worker
+        image: transcription-bridge-service:v1
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: KAFKA_BOOTSTRAP_SERVERS
+            value: my-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092
+          - name: KAFKA_TOPIC_AUDIO_CHUNKS
+            value: audio-chunks
+          - name: KAFKA_TOPIC_TRANSCRIPTION_RESULTS
+            value: transcription-results
+          - name: MINIO_ENDPOINT
+            value: minio:9000
+          - name: MINIO_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: minio-creds
+                key: accessKey
+          - name: MINIO_SECRET_KEY
+            valueFrom:
+              secretKeyRef:
+                name: minio-creds
+                key: secretKey
+          - name: MINIO_BUCKET_NAME
+            value: audio-chunks
+        ports:
+        - containerPort: 8001 # Port for FastAPI to expose chunks
+          name: http-bridge
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+
+---
+# Deployment for YouTube Ingestion Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: youtube-ingestion-deployment
+  labels:
+    app: youtube-ingestion
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: youtube-ingestion
+  template:
+    metadata:
+      labels:
+        app: youtube-ingestion
+    spec:
+      containers:
+      - name: youtube-ingestion
+        image: youtube-ingestion-service:v1
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: KAFKA_BOOTSTRAP_SERVERS
+            value: my-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092
+          - name: KAFKA_TOPIC_AUDIO_CHUNKS
+            value: audio-chunks
+          - name: MINIO_ENDPOINT
+            value: minio:9000
+          - name: MINIO_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: minio-creds
+                key: accessKey
+          - name: MINIO_SECRET_KEY
+            valueFrom:
+              secretKeyRef:
+                name: minio-creds
+                key: secretKey
+          - name: MINIO_BUCKET_NAME
+            value: audio-chunks
+          - name: CHUNK_DURATION_SECONDS
+            value: "60"
+          - name: OVERLAP_SECONDS
+            value: "10"
+        ports:
+        - containerPort: 8000
+          name: http-api
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+---
+# KafkaTopic for audio chunks
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: audio-chunks
+  labels:
+    strimzi.io/cluster: my-cluster
+spec:
+  partitions: 1
+  replicas: 1
+  config:
+    retention.ms: 604800000
+---
+# KafkaTopic for transcription results
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: transcription-results
+  labels:
+    strimzi.io/cluster: my-cluster
+spec:
+  partitions: 1
+  replicas: 1
+  config:
+    retention.ms: 604800000
+---
+# KafkaTopic for chapter results
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: chapter-results
+  labels:
+    strimzi.io/cluster: my-cluster
+spec:
+  partitions: 1
+  replicas: 1
+  config:
+    retention.ms: 604800000
+---
+# Deployment for Chapter Generation Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chapter-generation-deployment
+  labels:
+    app: chapter-generation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: chapter-generation
+  template:
+    metadata:
+      labels:
+        app: chapter-generation
+    spec:
+      containers:
+      - name: chapter-generation-worker
+        image: chapter-generation-service:v1
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: KAFKA_BOOTSTRAP_SERVERS
+            value: my-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092
+          - name: KAFKA_TOPIC_TRANSCRIPTION_RESULTS
+            value: transcription-results
+          - name: KAFKA_TOPIC_CHAPTER_RESULTS
+            value: chapter-results
+          - name: KAFKA_CONSUMER_GROUP_ID
+            value: chapter-generation-group
+          - name: VIDEO_COMPLETION_TIMEOUT
+            value: "8"
+          - name: GEMINI_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: gemini-api-key
+                key: apiKey
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+---
+# Kubernetes Secret for MinIO credentials
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minio-creds
+type: Opaque
+data:
+  accessKey: xyz123abc-minio-access # base64 encoded minio access key
+  secretKey: xyz123abc-minio-secret # base64 encoded minio secret key
+---
+# Kubernetes Secret for Gemini API Key
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gemini-api-key
+type: Opaque
+data:
+  apiKey: abc123xyz-your-key # Replace with your base64 encoded gemini API key

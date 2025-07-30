@@ -1,0 +1,242 @@
+# ingestion-service/app.py
+import os
+import subprocess
+import time
+from pathlib import Path
+import json
+import uuid
+import shutil
+
+from fastapi import FastAPI, Body
+import uvicorn
+
+# External client imports
+from kafka import KafkaProducer
+from minio import Minio
+from minio.error import S3Error
+
+# --- Minikube Deployment Configuration ---
+KAFKA_BOOTSTRAP_SERVERS = os.environ.get('KAFKA_BOOTSTRAP_SERVERS', 'my-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092')
+KAFKA_TOPIC_AUDIO_CHUNKS = os.environ.get('KAFKA_TOPIC_AUDIO_CHUNKS', 'audio-chunks')
+
+MINIO_ENDPOINT = os.environ.get('MINIO_ENDPOINT', 'minio:9000') # MinIO is in default namespace
+MINIO_ACCESS_KEY = os.environ.get('MINIO_ACCESS_KEY')
+MINIO_SECRET_KEY = os.environ.get('MINIO_SECRET_KEY')
+MINIO_BUCKET_NAME = os.environ.get('MINIO_BUCKET_NAME', 'audio-chunks')
+
+CHUNK_DURATION = int(os.environ.get('CHUNK_DURATION_SECONDS', '60'))  # seconds
+CHUNK_OVERLAP = int(os.environ.get('OVERLAP_SECONDS', '10'))  # seconds
+
+# --- Kafka Producer Setup ---
+producer = None
+def get_kafka_producer():
+    global producer
+    if producer is None:
+        print(f"Initializing Kafka Producer for: {KAFKA_BOOTSTRAP_SERVERS}")
+        from kafka import KafkaProducer
+        producer = KafkaProducer(
+            bootstrap_servers=[KAFKA_BOOTSTRAP_SERVERS],
+            value_serializer=lambda v: json.dumps(v).encode('utf-8'),
+            retries=5,
+            linger_ms=100
+        )
+    return producer
+
+# --- MinIO Client Setup ---
+minio_client = None
+def get_minio_client():
+    global minio_client
+    if minio_client is None:
+        if not MINIO_ACCESS_KEY or not MINIO_SECRET_KEY:
+            raise ValueError("MINIO_ACCESS_KEY and MINIO_SECRET_KEY must be set as environment variables.")
+        print(f"Initializing MinIO Client for: {MINIO_ENDPOINT}")
+        from minio import Minio
+        minio_client = Minio(
+            MINIO_ENDPOINT,
+            access_key=MINIO_ACCESS_KEY,
+            secret_key=MINIO_SECRET_KEY,
+            secure=False
+        )
+    return minio_client
+
+def ensure_minio_bucket_exists():
+    client = get_minio_client()
+    try:
+        from minio.error import S3Error
+        found = client.bucket_exists(MINIO_BUCKET_NAME)
+        if not found:
+            client.make_bucket(MINIO_BUCKET_NAME)
+            print(f"Created MinIO bucket '{MINIO_BUCKET_NAME}'")
+        else:
+            print(f"MinIO bucket '{MINIO_BUCKET_NAME}' already exists")
+    except S3Error as e:
+        print(f"Error checking/creating MinIO bucket: {e}")
+        raise
+
+def upload_chunk_to_minio(bucket_name: str, file_path: Path, object_name: str):
+    client = get_minio_client()
+    try:
+        from minio.error import S3Error
+        client.fput_object(
+            bucket_name,
+            object_name,
+            str(file_path),
+            content_type="audio/mpeg"
+        )
+        print(f"Uploaded '{file_path.name}' to MinIO as '{bucket_name}/{object_name}'")
+        return f"s3://{bucket_name}/{object_name}"
+    except S3Error as e:
+        print(f"Error uploading '{file_path.name}' to MinIO: {e}")
+        raise
+
+def publish_kafka_message(topic: str, message: dict):
+    prod = get_kafka_producer()
+    try:
+        prod.send(topic, message)
+        prod.flush()
+        print(f"Published Kafka message to topic '{topic}': {json.dumps(message, indent=2)}")
+    except Exception as e:
+        print(f"Error publishing message to Kafka topic '{topic}': {e}")
+        raise
+
+def download_and_chunk_audio(youtube_url: str):
+    video_id = youtube_url.split("v=")[-1].split("&")[0]
+
+    print(f"\n ---- Processing YT URL: {youtube_url} (ID: {video_id}) ---- \n")
+
+    temp_dir = Path(f"/tmp/temp_audio/{video_id}")
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    audio_path = temp_dir / f"{video_id}_full.mp3"
+
+    download_cmd= [
+        "yt-dlp", "-x", "--audio-format", "mp3", "--embed-metadata", "-o", str(audio_path), youtube_url
+    ]
+    print(f"Running download command: {' '.join(download_cmd)}")
+
+    try:
+        subprocess.run(download_cmd, check=True, capture_output=True, text=True)
+        print(f"Downloaded audio to {audio_path}")
+    except subprocess.CalledProcessError as e:
+        print(f"Error downloading audio: {e.stderr}")
+        return False
+    except FileNotFoundError:
+        print("yt-dlp not found. Please ensure yt-dlp is installed in the container and in PATH.")
+        return False
+    except Exception as e:
+        print(f"Unexpected error during yt-dlp download: {e}")
+        return False
+    
+    ffprobe_cmd = [
+        "ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(audio_path)
+    ]
+    try:
+        duration_output = subprocess.check_output(ffprobe_cmd, text=True).strip()
+        total_duration = float(duration_output)
+        print(f"Audio duration: {total_duration:.2f} seconds")
+    except (subprocess.CalledProcessError, ValueError) as e:
+        print(f"Error getting audio duration with ffprobe: {e}")
+        return False
+    except FileNotFoundError:
+        print("ffprobe not found. Please ensure ffmpeg is installed in the container and in PATH.")
+        return False
+    except Exception as e:
+        print(f"Unexpected error during ffprobe duration check: {e}")
+        return False
+    
+    start_time = 0.0
+    chunk_index = 0
+
+    while start_time < total_duration:
+        chunk_id = str(uuid.uuid4())
+        chunk_filename = f"{video_id}_chunk_{chunk_index}.mp3"
+        chunk_path = temp_dir / chunk_filename
+
+        current_chunk_end_time_sec = min(start_time + CHUNK_DURATION, total_duration)
+        actual_chunk_duration = current_chunk_end_time_sec - start_time
+
+        ffmpeg_cmd = [
+            "ffmpeg", "-i", str(audio_path), "-ss", str(start_time), "-t", str(actual_chunk_duration),
+            "-c:a", "libmp3lame", "-q:a", "2", "-map_metadata", "-1", str(chunk_path)
+        ]
+
+        print(f"Running ffmpeg command for chunk {chunk_index} (start: {start_time:.2f}, duration: {actual_chunk_duration:.2f}, end: {current_chunk_end_time_sec:.2f}): {' '.join(ffmpeg_cmd)}")
+
+        try:
+            subprocess.run(ffmpeg_cmd, check=True, capture_output=True, text=True)
+            print(f"Created chunk: {chunk_path}")
+        except subprocess.CalledProcessError as e:
+            print(f"Error creating chunk {chunk_index}: {e.stderr}")
+            start_time += CHUNK_DURATION - CHUNK_OVERLAP
+            chunk_index += 1
+            continue
+        except FileNotFoundError:
+            print("ffmpeg not found. Please ensure ffmpeg is installed in the container and in PATH.")
+            return False
+        except Exception as e:
+            print(f"Unexpected error creating chunk {chunk_index}: {e}")
+            return False
+        
+        object_name = f"{video_id}/chunks/{chunk_filename}"
+        try:
+            minio_url = upload_chunk_to_minio(MINIO_BUCKET_NAME, chunk_path, object_name)
+            print(f"MinIO upload complete: {minio_url}")
+        except Exception as e:
+            print(f"Failed to upload chunk {chunk_index} to MinIO: {e}")
+            start_time += CHUNK_DURATION - CHUNK_OVERLAP
+            chunk_index += 1
+            continue
+
+        message = {
+            "video_id": video_id,
+            "chunk_id": chunk_id,
+            "chunk_filename": chunk_filename,
+            "chunk_url": minio_url,
+            "start_time_sec": start_time,
+            "end_time_sec": current_chunk_end_time_sec
+        }
+        try:
+            publish_kafka_message(KAFKA_TOPIC_AUDIO_CHUNKS, message)
+        except Exception as e:
+            print(f"Failed to publish Kafka message for chunk {chunk_id}: {e}")
+            pass
+
+        start_time += CHUNK_DURATION - CHUNK_OVERLAP
+        chunk_index += 1
+
+    print(f"\n ---- Cleaning up temp directory: {temp_dir} ---- \n")
+    try:
+        shutil.rmtree(temp_dir)
+        print(f"Removed temporary directory: {temp_dir}")
+    except OSError as e:
+        print(f"Error removing temp directory {temp_dir}: {e}")
+    return True
+
+# --- FastAPI App Definition ---
+app = FastAPI()
+
+@app.post("/process-youtube-url/")
+async def process_youtube_url_endpoint(youtube_url: str = Body(..., embed=True)):
+    """
+    Receives a YouTube URL in the request body and triggers the audio ingestion and chunking.
+    """
+    print(f"Received request to process URL: {youtube_url}")
+    success = download_and_chunk_audio(youtube_url)
+    if success:
+        return {"status": "success", "message": "Audio ingestion and chunking initiated."}
+    else:
+        return {"status": "failure", "message": "Failed to process YouTube URL."}
+
+
+if __name__ == "__main__":
+    print("Starting Ingestion Service for Minikube Deployment...")
+
+    try:
+        ensure_minio_bucket_exists()
+    except Exception as e:
+        print(f"Critical error during MinIO bucket setup: {e}")
+        print("Exiting. Check MinIO configuration and network connectivity.")
+        exit(1)
+
+    print("Ingestion Service ready. Starting FastAPI server...")
+    uvicorn.run(app, host="0.0.0.0", port=8000)
