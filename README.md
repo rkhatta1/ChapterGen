@@ -8,7 +8,7 @@
 <span style="margin-top: 10px; width: 4rem; margin-right: 0.5rem;"><img alt="Static Badge" src="https://img.shields.io/badge/Gemini-8E75B2?style=flat&logo=googlegemini&logoColor=%23ffffff&logoSize=auto"></span>
 <span style="margin-top: 10px; width: 4rem; margin-right: 0.5rem;"><img alt="Static Badge" src="https://img.shields.io/badge/HuggingFace-040404?style=flat&logo=huggingface&logoColor=%23FFD21E&logoSize=auto"></span>
 </br>
-<div style="font-size: 2.5rem; margin-bottom: 1rem; margin-top: 0.5rem"><strong>What's the Topic? - An AI YouTube chapter generator</strong></div>
+<div style="font-size: 2.5rem; margin-bottom: 1rem;"><strong><h1>What's the Topic? - An AI YouTube chapter generator</h1></strong></div>
 </div>
 
 ## Project Overview
