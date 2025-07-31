@@ -63,7 +63,7 @@ It is still under development. This is the repo for the project's backend infras
 7. Once the minio pod is running, create the docker images of all the services
 
     ```bash
-    eval $(minikube docker-env) && cd chapter-generation-service && docker build -t chapter-generation-service:v1 . && cd .. && cd ingestion-service && docker build -t youtube-ingestion-service:v1 . && cd .. && cd trans-bridge && docker build transcription-bridge-service:v1 . && cd .. && cd frontend-bridge && docker build frontend-bridge:v1 . && cd ..
+    eval $(minikube docker-env) && cd chapter-generation-service && docker build -t chapter-generation-service:v1 . && cd .. && cd ingestion-service && docker build -t youtube-ingestion-service:v1 . && cd .. && cd trans-bridge && docker build transcription-bridge-service:v1 . && cd .. && cd frontend-bridge && docker build frontend-bridge:v1 . && cd .. && cd database-service && docker build database-service:v1 . && cd ..
     ```
 
 8. After the images are done building, deploy the services
@@ -104,27 +104,4 @@ It is still under development. This is the repo for the project's backend infras
 
 ### Testing the chapter generation:
 
-```bash
-# URL
-http://localhost:8000/process-youtube-url/
-
-# METHOD
-POST
-
-# Body
-{
-   "youtube_url": "youtube-video-url",
-   "generation_config": {
-        "creativity": "Neutral", # ['GenZ', 'Creative', 'Neutral', 'Formal', 'Corporate']
-        "segmentation_threshold": "Default" # ['Detailed', 'Default', 'Abstract'];
-   },
-}
-
-# Monitor the local-transcrier instances as they transcribe the chunks and store them in the transcription-results topic. In a new terminal tab, run this command to monitor the daat inside chapter-results topic:
-
-kubectl run kafka-consumer -ti --image=quay.io/strimzi/kafka:0.41.0-kafka-3.7.0 --rm=true --restart=Never -n kafka -- bin/kafka-console-consumer.sh --bootstrap-server my-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092 --topic chapter-results --from-beginning
-
-# Optionally, you could also fire up the minikube dashboard to monitor the pods, services, topics etc.
-
-minikube dashboard
-```
+- Set the [frontend](https://github.com/rkhatta1/ChapterGenFrontend) up.

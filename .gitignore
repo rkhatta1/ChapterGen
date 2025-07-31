@@ -7,3 +7,4 @@ Temp/
 kafka-single-node.yaml
 trans-worker/
 frontend/
+docker-compose.yaml
