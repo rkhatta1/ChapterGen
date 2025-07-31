@@ -96,7 +96,7 @@ spec:
           - name: CHUNK_DURATION_SECONDS
             value: "60"
           - name: OVERLAP_SECONDS
-            value: "10"
+            value: "16"
         ports:
         - containerPort: 8000
           name: http-api
@@ -210,3 +210,55 @@ metadata:
 type: Opaque
 data:
   apiKey: abc123xyz-your-key # Replace with your base64 encoded gemini API key
+---
+# Deployment for Frontend Bridge Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend-bridge-deployment
+  labels:
+    app: frontend-bridge
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend-bridge
+  template:
+    metadata:
+      labels:
+        app: frontend-bridge
+    spec:
+      containers:
+      - name: frontend-bridge-service
+        image: frontend-bridge:v1
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: KAFKA_BOOTSTRAP_SERVERS
+            value: my-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092
+          - name: KAFKA_TOPIC_CHAPTER_RESULTS
+            value: chapter-results
+          - name: KAFKA_CONSUMER_GROUP_ID
+            value: frontend-bridge-group
+        ports:
+        - containerPort: 8765
+          name: websocket
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "250m"
+---
+# Service for Frontend Bridge
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-bridge-service
+spec:
+  selector:
+    app: frontend-bridge
+  ports:
+    - protocol: TCP
+      port: 8765
+      targetPort: 8765

@@ -4,3 +4,4 @@ kafka-python==2.0.2
 minio==7.2.15
 yt-dlp
 requests
+fastapi-cors

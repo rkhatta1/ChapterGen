@@ -8,7 +8,10 @@ import uuid
 import shutil
 
 from fastapi import FastAPI, Body
-import uvicorn
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+from typing import Optional, Dict
+    # Define fields as needed,import uvicorn
 
 # External client imports
 from kafka import KafkaProducer
@@ -76,7 +79,6 @@ def ensure_minio_bucket_exists():
 def upload_chunk_to_minio(bucket_name: str, file_path: Path, object_name: str):
     client = get_minio_client()
     try:
-        from minio.error import S3Error
         client.fput_object(
             bucket_name,
             object_name,
@@ -99,7 +101,7 @@ def publish_kafka_message(topic: str, message: dict):
         print(f"Error publishing message to Kafka topic '{topic}': {e}")
         raise
 
-def download_and_chunk_audio(youtube_url: str):
+def download_and_chunk_audio(youtube_url: str, generation_config: Optional[Dict] = None):
     video_id = youtube_url.split("v=")[-1].split("&")[0]
 
     print(f"\n ---- Processing YT URL: {youtube_url} (ID: {video_id}) ---- \n")
@@ -193,7 +195,8 @@ def download_and_chunk_audio(youtube_url: str):
             "chunk_filename": chunk_filename,
             "chunk_url": minio_url,
             "start_time_sec": start_time,
-            "end_time_sec": current_chunk_end_time_sec
+            "end_time_sec": current_chunk_end_time_sec,
+            "generation_config": generation_config or {} # Pass config along
         }
         try:
             publish_kafka_message(KAFKA_TOPIC_AUDIO_CHUNKS, message)
@@ -212,16 +215,40 @@ def download_and_chunk_audio(youtube_url: str):
         print(f"Error removing temp directory {temp_dir}: {e}")
     return True
 
+# --- Pydantic Models for Request Body ---                                                                                                               │
+class GenerationConfig(BaseModel):
+    creativity: Optional[str] = 'Neutral'
+    segmentation_threshold: Optional[str] = 'Default'
+
+class ProcessRequest(BaseModel):
+    youtube_url: str
+    generation_config: Optional[GenerationConfig] = Field(default_factory=dict)
+
 # --- FastAPI App Definition ---
 app = FastAPI()
 
+# --- CORS Middleware Setup ---
+# This allows the frontend (running on a different origin) to communicate with this API.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"]  # Allows all methods
+)
+
 @app.post("/process-youtube-url/")
-async def process_youtube_url_endpoint(youtube_url: str = Body(..., embed=True)):
+async def process_youtube_url_endpoint(request: ProcessRequest):
     """
-    Receives a YouTube URL in the request body and triggers the audio ingestion and chunking.
+    Receives a YouTube URL and optional generation config, then triggers the audio ingestion and chunking.
     """
-    print(f"Received request to process URL: {youtube_url}")
-    success = download_and_chunk_audio(youtube_url)
+    print(f"Received request to process URL: {request.youtube_url}")
+    print(f"Generation config: {request.generation_config}")
+    
+    # Convert Pydantic model to dict for downstream processing
+    config_dict = request.generation_config.dict() if request.generation_config else {}
+
+    success = download_and_chunk_audio(request.youtube_url, generation_config=config_dict)
+    
     if success:
         return {"status": "success", "message": "Audio ingestion and chunking initiated."}
     else:

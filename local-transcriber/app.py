@@ -13,6 +13,7 @@ from kafka.errors import KafkaError
 
 # --- Whisper Local Model Import ---
 import whisper
+import torch
 
 # Global model loading (done once when the app starts)
 print("Loading Whisper model (this may take a moment)...")
@@ -63,22 +64,30 @@ def publish_kafka_message(topic: str, message: dict):
 
 # --- Transcription Logic using Local Whisper Model ---
 def transcribe_audio_chunk(audio_file_path: Path):
-    transcript_text = None
+    """Transcribes the audio file and returns sentence-level segments."""
     try:
-        print(f"Transcribing {audio_file_path.name} using local Whisper model...")
-        result = whisper_model.transcribe(str(audio_file_path))
-        transcript_text = result["text"]
+        print(f"Transcribing {audio_file_path.name} using local Whisper model for sentence-level segments...")
+        # By not specifying word_timestamps, we get sentence-level segments by default.
+        with torch.no_grad():
+            result = whisper_model.transcribe(str(audio_file_path))
         
-        if not transcript_text:
-            print(f"No transcript text obtained for {audio_file_path}")
+        if not result or "segments" not in result:
+            print(f"No segments obtained for {audio_file_path}")
             return None
 
-        print(f"Transcription completed: {transcript_text[:100]}...")
+        # We only need the 'text', 'start', and 'end' keys for each segment.
+        # This simplifies the data sent over Kafka.
+        simplified_segments = [
+            {"text": seg["text"], "start": seg["start"], "end": seg["end"]}
+            for seg in result["segments"]
+        ]
+
+        print(f"Transcription completed for {audio_file_path.name}. Segments found: {len(simplified_segments)}")
+        return simplified_segments
+
     except Exception as e:
         print(f"Error during transcription of {audio_file_path}: {e}")
-        transcript_text = None
-    
-    return transcript_text
+        return None
 
 
 def process_claimed_chunk(claim_response: dict): # Takes the claim response from the bridge
@@ -88,6 +97,7 @@ def process_claimed_chunk(claim_response: dict): # Takes the claim response from
     chunk_id_to_process = claim_response['chunk_id']
     original_metadata = claim_response['metadata']
     claimed_by_id = claim_response['claimed_by'] # The ID the bridge assigned for this claim
+    generation_config = claim_response.get('generation_config', {}) # Get the config
 
     print(f"\n[{LOCAL_TRANSCRIBER_ID}] Processing claimed chunk: {chunk_id_to_process}")
     download_url = f"{BRIDGE_SERVICE_URL}/audio-chunks/{chunk_id_to_process}"
@@ -107,16 +117,18 @@ def process_claimed_chunk(claim_response: dict): # Takes the claim response from
                 f.write(chunk)
         print(f"[{LOCAL_TRANSCRIBER_ID}] Downloaded chunk to {local_audio_path}")
 
-        transcript = transcribe_audio_chunk(local_audio_path)
+        transcript_segments = transcribe_audio_chunk(local_audio_path)
 
-        if transcript:
+        if transcript_segments:
+            # The message now contains the detailed segments, not just a block of text
             result_message = {
                 'video_id': original_metadata['video_id'],
                 'chunk_id': original_metadata['chunk_id'],
                 'start_time_sec': original_metadata['start_time_sec'],
                 'end_time_sec': original_metadata['end_time_sec'],
-                'transcript_text': transcript,
-                'source_chunk_url': original_metadata['chunk_url']
+                'segments': transcript_segments, # Send the detailed segments
+                'source_chunk_url': original_metadata['chunk_url'],
+                'generation_config': generation_config
             }
             publish_kafka_message(KAFKA_TOPIC_TRANSCRIPTION_RESULTS, result_message)
             transcription_successful = True

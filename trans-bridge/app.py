@@ -133,7 +133,12 @@ async def claim_next_chunk():
                 info["last_claimed_at"] = time.time()
                 info["claimed_by"] = str(uuid.uuid4()) # Assign a unique claim ID for this request
                 print(f"Claimed chunk {chunk_id} for processing by {info['claimed_by']}. Status: processing.")
-                return {"chunk_id": chunk_id, "metadata": info["metadata"], "claimed_by": info["claimed_by"]}
+                return {
+                    "chunk_id": chunk_id,
+                    "metadata": info["metadata"],
+                    "claimed_by": info["claimed_by"],
+                    "generation_config": info.get("generation_config", {}) # Return config to transcriber
+                }
     
     # If the lock is released and we haven't returned, it means no chunks were found.
     raise HTTPException(status_code=404, detail="No pending chunks available to claim.")
@@ -175,15 +180,19 @@ async def mark_chunk_processed(chunk_id: str, claimed_by: str = None): # Add cla
 # Background task to consume Kafka messages
 async def consume_kafka_chunks():
     consumer = get_kafka_consumer()
+    loop = asyncio.get_event_loop()
     print("Starting Kafka consumer background task for bridge service...")
     minio_client_instance = get_minio_client()
 
     while True:
         try:
-            # Poll for messages. Auto-commit will handle committing offsets.
-            messages = consumer.poll(timeout_ms=1000, max_records=1)
+            # Run the blocking poll operation in a separate thread to avoid freezing the event loop
+            messages = await loop.run_in_executor(
+                None, consumer.poll, 1000, 1  # Corresponds to timeout_ms=1000, max_records=1
+            )
+
             if not messages:
-                await asyncio.sleep(1)
+                await asyncio.sleep(1) # Wait a bit if no messages are available
                 continue
 
             for tp, consumer_records in messages.items():
@@ -191,10 +200,9 @@ async def consume_kafka_chunks():
                     chunk_metadata = message.value
                     chunk_id = chunk_metadata.get('chunk_id')
                     
-                    # Prevent adding duplicate chunks if already pending/processing/completed
                     if chunk_id in pending_chunks:
                         print(f"Bridge Service: Chunk {chunk_id} already in pending_chunks. Skipping re-processing.")
-                        continue # Skip to next message if already tracking this chunk
+                        continue
 
                     print(f"\nBridge Service: Received Kafka message for chunk: {chunk_id}")
 
@@ -207,12 +215,12 @@ async def consume_kafka_chunks():
                         minio_client_instance.fget_object(MINIO_BUCKET_NAME, minio_object_name, str(local_chunk_path))
                         print(f"Bridge Service: Downloaded '{minio_object_name}' to '{local_chunk_path}'")
                         
-                        # Store info for HTTP exposure
                         pending_chunks[chunk_id] = {
                             "local_chunk_path": str(local_chunk_path),
                             "chunk_filename": chunk_metadata['chunk_filename'],
                             "metadata": chunk_metadata,
-                            "status": "pending" # Initial status
+                            "status": "pending",
+                            "generation_config": chunk_metadata.get("generation_config", {}) # Carry over the config
                         }
                         print(f"Bridge Service: Chunk {chunk_id} ready for external consumption via API. Status: pending.")
 
@@ -251,4 +259,4 @@ if __name__ == "__main__":
     print("Starting Audio Chunk Bridge Service...")
     get_minio_client()
     get_kafka_producer()
-    uvicorn.run(app, host="0.0.0.0", port=8001) # Changed port to 8000
+    uvicorn.run(app, host="0.0.0.0", port=8001)

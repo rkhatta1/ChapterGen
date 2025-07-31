@@ -63,7 +63,7 @@ It is still under development. This is the repo for the project's backend infras
 7. Once the minio pod is running, create the docker images of all the services
 
     ```bash
-    eval $(minikube docker-env) && cd trans-bridge && docker build -t audio-transcription-service:v1 . && cd .. && cd ingestion-service && docker build -t youtube-ingestion-service:v1 . && cd .. && cd trans-bridge && docker build transcription-bridge-service:v1 . && cd ..
+    eval $(minikube docker-env) && cd chapter-generation-service && docker build -t chapter-generation-service:v1 . && cd .. && cd ingestion-service && docker build -t youtube-ingestion-service:v1 . && cd .. && cd trans-bridge && docker build transcription-bridge-service:v1 . && cd .. && cd frontend-bridge && docker build frontend-bridge:v1 . && cd ..
     ```
 
 8. After the images are done building, deploy the services
@@ -92,12 +92,14 @@ It is still under development. This is the repo for the project's backend infras
     kubectl port-forward <youtube-ingestion-deployment-name> 8000:8000
 
     kubectl port-forward <transcription-bridge-deployment-name> 8001:8001
+
+    kubectl port-forward <frontend-bridge-deployment-name> 8765:8765
     ```
 
 11. Finally, run the local-transcriber server and scale it horizontally as needed (run multiple instances in different tabs)
 
     ```bash
-    cd local-transcriber && python3 app.py && cd ..
+    cd local-transcriber && pip install -r requirements.txt && python3 app.py && cd ..
     ```
 
 ### Testing the chapter generation:
@@ -111,7 +113,11 @@ POST
 
 # Body
 {
-   "youtube_url": "youtube-video-url"
+   "youtube_url": "youtube-video-url",
+   "generation_config": {
+        "creativity": "Neutral", # ['GenZ', 'Creative', 'Neutral', 'Formal', 'Corporate']
+        "segmentation_threshold": "Default" # ['Detailed', 'Default', 'Abstract'];
+   },
 }
 
 # Monitor the local-transcrier instances as they transcribe the chunks and store them in the transcription-results topic. In a new terminal tab, run this command to monitor the daat inside chapter-results topic:

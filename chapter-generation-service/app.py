@@ -63,47 +63,80 @@ def publish_kafka_message(topic: str, message: dict):
         print(f"Error publishing message to Kafka topic '{topic}': {e}")
         raise
 
-def generate_chapters(transcripts):
+def generate_chapters(video_id, all_segments, generation_config=None):
     """
-    Generates chapters from a list of transcripts using the Gemini API.
+    Generates chapters from a list of all transcript segments for a video.
     """
     if not model:
         print("Gemini model not initialized. Skipping chapter generation.")
         return []
 
-    # Combine transcript text and add timestamps for context
-    full_transcript_with_times = ""
-    for t in transcripts:
-        start = t['start_time_sec']
-        text = t['transcript_text']
-        full_transcript_with_times += f"[start_time: {start:.2f}s] {text}\n"
+    # --- Assemble Full Transcript with Sentence Timestamps ---
+    full_transcript_for_prompt = ""
+    for segment in all_segments:
+        start = segment.get('start')
+        end = segment.get('end')
+        text = segment.get('text')
+        full_transcript_for_prompt += f"[start: {start:.2f}s, end: {end:.2f}s] {text}\n"
+
+    # --- Dynamic Prompt Generation ---
+    creativity_style = generation_config.get('creativity', 'Neutral') if generation_config else 'Neutral'
+    segmentation_threshold = generation_config.get('segmentation_threshold', 'Default') if generation_config else 'Default'
+
+    style_instructions = {
+        'GenZ': "Use trendy, casual, and slightly informal language. Include emojis where appropriate.",
+        'Creative': "Use engaging, imaginative, and descriptive language.",
+        'Neutral': "Use clear, concise, and objective language.",
+        'Formal': "Use professional, structured, and formal language.",
+        'Corporate': "Use business-oriented, professional, and polished language suitable for a corporate presentation."
+    }
+    style_instruction = style_instructions.get(creativity_style, style_instructions['Neutral'])
+
+    threshold_instructions = {
+        'Detailed': "Create many short, detailed chapters, identifying every minor shift in topic.",
+        'Default': "Create a balanced number of chapters, focusing on the main talking points.",
+        'Abstract': "Create only a few high-level chapters, summarizing the major themes of the video."
+    }
+    threshold_instruction = threshold_instructions.get(segmentation_threshold, threshold_instructions['Default'])
+
+    final_timestamp = all_segments[-1]['end'] if all_segments else 0
 
     prompt = f"""
-    You are an expert at creating YouTube video chapters.
-    Based on the following transcript with timestamps, please generate a concise list of chapters.
-    Each chapter must have a "start_time" (in seconds), an "end_time" (in seconds), and a short, descriptive "title".
-    The start_time of the first chapter must be the start_time of the first transcript segment.
-    The end_time of the last chapter must be the end_time of the last transcript segment.
-    The output must be a valid JSON object containing a single key "chapters", which is a list of chapter objects. Do not include any other text or explanations in your response.
+    You are an expert video editor tasked with creating semantic chapters for a YouTube video.
+    Your goal is to identify the main topics in the video and create chapters that accurately reflect when each topic begins and ends.
 
-    Example format:
+    **Instructions:**
+    1.  Analyze the complete, timestamped transcript provided below. Each line represents a sentence or phrase with its start and end time.
+    2.  **Chapter Granularity:** {threshold_instruction}
+    3.  **Chapter Title Style:** {style_instruction}
+    4.  Identify the natural breakpoints in the conversation where the topic changes.
+    5.  For each identified topic, create a chapter with a `start_time`, `end_time`, and a `title`.
+    6.  The `start_time` of a chapter should be the `start` time of the first sentence of that topic.
+    7.  The `end_time` of a chapter should be the `end` time of the last sentence of that topic.
+    8.  The first chapter must start at 0.0 seconds.
+    9.  The last chapter must end at the video's final timestamp: {final_timestamp:.2f} seconds.
+    10. The output **MUST** be a valid JSON object containing a single key `chapters`, which is a list of chapter objects. Do not include any other text, explanations, or markdown formatting in your response.
+
+    **Example JSON Output Format:**
+    ```json
     {{
       "chapters": [
         {{
           "start_time": 0.0,
-          "end_time": 58.5,
-          "title": "Introduction to the System"
+          "end_time": 33.5,
+          "title": "The Initial Problem"
         }},
         {{
-          "start_time": 58.5,
-          "end_time": 125.2,
-          "title": "Explaining the Ingestion Service"
+          "start_time": 33.5,
+          "end_time": 92.1,
+          "title": "Developing a Solution"
         }}
       ]
     }}
+    ```
 
-    Transcript:
-    {full_transcript_with_times}
+    **Timestamped Transcript:**
+    {full_transcript_for_prompt}
     """
 
     try:
@@ -121,8 +154,60 @@ def generate_chapters(transcripts):
         json_string = text_response[start_index:end_index]
         
         chapters = json.loads(json_string)['chapters']
-        print(f"Successfully generated {len(chapters)} chapters.")
-        return chapters
+        print(f"Successfully generated {len(chapters)} raw chapters from Gemini.")
+
+        # --- Filter and Merge Chapters to meet minimum duration ---
+        if not chapters:
+            return []
+
+        print("\n---- RAW CHAPTERS -----")
+        print(json.dumps(chapters, indent=2))
+        print("------------------------\n")
+
+        # Set minimum duration based on user's preference
+        segmentation_threshold = generation_config.get('segmentation_threshold', 'Default')
+        min_duration_map = {
+            'Detailed': 15, # Allow shorter chapters for detailed requests
+            'Default': 20,
+            'Abstract': 30 # Encourage longer chapters for abstract requests
+        }
+        MIN_CHAPTER_DURATION = min_duration_map.get(segmentation_threshold, 20)
+        print(f"Using minimum chapter duration of {MIN_CHAPTER_DURATION} seconds based on threshold: '{segmentation_threshold}'")
+
+        final_chapters = []
+        if not chapters:
+            return []
+
+        # Add the first chapter unconditionally, ensuring it starts at 0.0
+        first_chapter = chapters[0]
+        first_chapter['start_time'] = 0.0
+        final_chapters.append(first_chapter)
+
+        for i in range(1, len(chapters)):
+            current_chapter = chapters[i]
+            last_final_chapter = final_chapters[-1]
+
+            # Calculate duration of the current chapter and its gap from the previous valid one
+            duration = current_chapter['end_time'] - current_chapter['start_time']
+            gap = current_chapter['start_time'] - last_final_chapter['start_time']
+
+            if duration >= MIN_CHAPTER_DURATION and gap >= MIN_CHAPTER_DURATION:
+                # This chapter is valid. First, close the gap with the previous chapter.
+                last_final_chapter['end_time'] = current_chapter['start_time']
+                final_chapters.append(current_chapter)
+            else:
+                # This chapter is too short or too close. Merge it with the previous one.
+                last_final_chapter['end_time'] = current_chapter['end_time']
+                print(f"Merging short or close chapter \"{current_chapter.get('title', 'Untitled')}\" into \"{last_final_chapter.get('title', 'Untitled')}\"")
+
+        print(f"Filtered and merged chapters. Final count: {len(final_chapters)}")
+
+        print("\n--- FINAL PROCESSED CHAPTERS ---")
+        print(json.dumps(final_chapters, indent=2))
+        print("------------------------------\n")
+
+        return final_chapters
+
     except Exception as e:
         print(f"Error generating chapters with Gemini: {e}")
         print(f"Gemini response was: {response.text if 'response' in locals() else 'N/A'}")
@@ -162,13 +247,31 @@ def start_chapter_generation_worker():
             
             for video_id in completed_videos:
                 print(f"Video {video_id} timed out. Processing for chapter generation.")
-                transcripts = video_transcripts.pop(video_id, [])
+                transcription_chunks = video_transcripts.pop(video_id, [])
                 del last_received_time[video_id]
 
-                if transcripts:
-                    # Sort transcripts by start time
-                    transcripts.sort(key=lambda x: x['start_time_sec'])
-                    chapters = generate_chapters(transcripts)
+                if transcription_chunks:
+                    # Sort chunks by their original start time
+                    transcription_chunks.sort(key=lambda x: x['start_time_sec'])
+                    
+                    # --- Assemble all segments from all chunks, making timestamps absolute ---
+                    all_segments = []
+                    for chunk in transcription_chunks:
+                        chunk_start_time = chunk.get('start_time_sec', 0)
+                        for segment in chunk.get('segments', []):
+                            # Convert relative segment timestamps to absolute video timestamps
+                            segment['start'] += chunk_start_time
+                            segment['end'] += chunk_start_time
+                            all_segments.append(segment)
+
+                    if not all_segments:
+                        print(f"No segments found for video {video_id}. Skipping chapter generation.")
+                        continue
+
+                    # Extract generation_config from the first chunk
+                    generation_config = transcription_chunks[0].get('generation_config', {})
+
+                    chapters = generate_chapters(video_id, all_segments, generation_config)
                     if chapters:
                         message = {
                             "video_id": video_id,

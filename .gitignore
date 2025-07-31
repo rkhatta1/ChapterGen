@@ -1,0 +1,9 @@
+.env
+deploymentsv2.yaml
+errors/
+Temp/
+*.log
+*.tmp
+kafka-single-node.yaml
+trans-worker/
+frontend/
