@@ -15,7 +15,7 @@
 
 Well, YouTube's creator studio already has a baked in feature for generating chapters, but it is quite lack luster when it comes to granularity and control over the semantics of the chapters that it generates. Hence, this project exists.
 
-It is still under development. This is the repo for the project's backend infrastructure.
+It is still under development. This is the repo for the project's backend infrastructure. Check the frontend repo out [here.](https://github.com/rkhatta1/ChapterGenFrontend)
 
 ## Local Development Setup
 
