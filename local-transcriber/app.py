@@ -98,6 +98,7 @@ def process_claimed_chunk(claim_response: dict): # Takes the claim response from
     original_metadata = claim_response['metadata']
     claimed_by_id = claim_response['claimed_by'] # The ID the bridge assigned for this claim
     generation_config = claim_response.get('generation_config', {}) # Get the config
+    user_id = claim_response.get('user_id')
 
     print(f"\n[{LOCAL_TRANSCRIBER_ID}] Processing claimed chunk: {chunk_id_to_process}")
     download_url = f"{BRIDGE_SERVICE_URL}/audio-chunks/{chunk_id_to_process}"
@@ -128,7 +129,8 @@ def process_claimed_chunk(claim_response: dict): # Takes the claim response from
                 'end_time_sec': original_metadata['end_time_sec'],
                 'segments': transcript_segments, # Send the detailed segments
                 'source_chunk_url': original_metadata['chunk_url'],
-                'generation_config': generation_config
+                'generation_config': generation_config,
+                'user_id': user_id,
             }
             publish_kafka_message(KAFKA_TOPIC_TRANSCRIPTION_RESULTS, result_message)
             transcription_successful = True

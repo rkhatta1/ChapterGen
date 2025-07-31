@@ -6,6 +6,7 @@ from pathlib import Path
 import json
 import uuid
 import shutil
+import httpx
 
 from fastapi import FastAPI, Body
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,6 +22,7 @@ from minio.error import S3Error
 # --- Minikube Deployment Configuration ---
 KAFKA_BOOTSTRAP_SERVERS = os.environ.get('KAFKA_BOOTSTRAP_SERVERS', 'my-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092')
 KAFKA_TOPIC_AUDIO_CHUNKS = os.environ.get('KAFKA_TOPIC_AUDIO_CHUNKS', 'audio-chunks')
+DATABASE_SERVICE_URL = "http://database-service-service:8008"
 
 MINIO_ENDPOINT = os.environ.get('MINIO_ENDPOINT', 'minio:9000') # MinIO is in default namespace
 MINIO_ACCESS_KEY = os.environ.get('MINIO_ACCESS_KEY')
@@ -101,7 +103,29 @@ def publish_kafka_message(topic: str, message: dict):
         print(f"Error publishing message to Kafka topic '{topic}': {e}")
         raise
 
-def download_and_chunk_audio(youtube_url: str, generation_config: Optional[Dict] = None):
+async def get_user_id_from_token(access_token: str):
+    """Get user ID from the database service using the access token."""
+    try:
+        async with httpx.AsyncClient() as client:
+            # Get profile from Google
+            headers = {"Authorization": f"Bearer {access_token}"}
+            response = await client.get("https://www.googleapis.com/oauth2/v1/userinfo", headers=headers)
+            response.raise_for_status()
+            profile = response.json()
+            email = profile.get("email")
+
+            if not email:
+                return None
+
+            # Get user from DB by email
+            response = await client.get(f"{DATABASE_SERVICE_URL}/users/by-email/{email}")
+            response.raise_for_status()
+            return response.json().get("id")
+    except httpx.RequestError as e:
+        print(f"Error getting user ID: {e}")
+        return None
+    
+def download_and_chunk_audio(youtube_url: str, user_id: int, generation_config: Optional[Dict] = None):
     video_id = youtube_url.split("v=")[-1].split("&")[0]
 
     print(f"\n ---- Processing YT URL: {youtube_url} (ID: {video_id}) ---- \n")
@@ -196,7 +220,8 @@ def download_and_chunk_audio(youtube_url: str, generation_config: Optional[Dict]
             "chunk_url": minio_url,
             "start_time_sec": start_time,
             "end_time_sec": current_chunk_end_time_sec,
-            "generation_config": generation_config or {} # Pass config along
+            "generation_config": generation_config or {}, # Pass config along
+            "user_id": user_id,
         }
         try:
             publish_kafka_message(KAFKA_TOPIC_AUDIO_CHUNKS, message)
@@ -219,10 +244,11 @@ def download_and_chunk_audio(youtube_url: str, generation_config: Optional[Dict]
 class GenerationConfig(BaseModel):
     creativity: Optional[str] = 'Neutral'
     segmentation_threshold: Optional[str] = 'Default'
+    access_token: Optional[str] = None  # For user authentication
 
 class ProcessRequest(BaseModel):
     youtube_url: str
-    generation_config: Optional[GenerationConfig] = Field(default_factory=dict)
+    generation_config: GenerationConfig
 
 # --- FastAPI App Definition ---
 app = FastAPI()
@@ -244,11 +270,18 @@ async def process_youtube_url_endpoint(request: ProcessRequest):
     print(f"Received request to process URL: {request.youtube_url}")
     print(f"Generation config: {request.generation_config}")
     
+    access_token = request.generation_config.access_token
+    if not access_token:
+        return {"status": "failure", "message": "Access token is required."}
+
+    user_id = await get_user_id_from_token(access_token)
+    if not user_id:
+        return {"status": "failure", "message": "Could not authenticate user."}
+
     # Convert Pydantic model to dict for downstream processing
     config_dict = request.generation_config.dict() if request.generation_config else {}
 
-    success = download_and_chunk_audio(request.youtube_url, generation_config=config_dict)
-    
+    success = download_and_chunk_audio(request.youtube_url, user_id, generation_config=config_dict)    
     if success:
         return {"status": "success", "message": "Audio ingestion and chunking initiated."}
     else:

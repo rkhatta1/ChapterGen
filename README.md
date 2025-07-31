@@ -63,7 +63,7 @@ It is still under development. This is the repo for the project's backend infras
 7. Once the minio pod is running, create the docker images of all the services
 
     ```bash
-    eval $(minikube docker-env) && cd chapter-generation-service && docker build -t chapter-generation-service:v1 . && cd .. && cd ingestion-service && docker build -t youtube-ingestion-service:v1 . && cd .. && cd trans-bridge && docker build transcription-bridge-service:v1 . && cd .. && cd frontend-bridge && docker build frontend-bridge:v1 . && cd .. && cd database-service && docker build database-service:v1 . && cd ..
+    eval $(minikube docker-env) && cd chapter-generation-service && docker build -t chapter-generation-service:v1 . && cd .. && cd ingestion-service && docker build -t youtube-ingestion-service:v1 . && cd .. && cd trans-bridge && docker build -t transcription-bridge-service:v1 . && cd .. && cd frontend-bridge && docker build -t frontend-bridge:v1 . && cd .. && cd database-service && docker build -t database-service:v1 . && cd ..
     ```
 
 8. After the images are done building, deploy the services

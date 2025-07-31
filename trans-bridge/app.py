@@ -137,7 +137,8 @@ async def claim_next_chunk():
                     "chunk_id": chunk_id,
                     "metadata": info["metadata"],
                     "claimed_by": info["claimed_by"],
-                    "generation_config": info.get("generation_config", {}) # Return config to transcriber
+                    "generation_config": info.get("generation_config", {}), # Return config to transcriber
+                    "user_id": info.get("user_id"),
                 }
     
     # If the lock is released and we haven't returned, it means no chunks were found.
@@ -220,7 +221,8 @@ async def consume_kafka_chunks():
                             "chunk_filename": chunk_metadata['chunk_filename'],
                             "metadata": chunk_metadata,
                             "status": "pending",
-                            "generation_config": chunk_metadata.get("generation_config", {}) # Carry over the config
+                            "generation_config": chunk_metadata.get("generation_config", {}),
+                            "user_id": chunk_metadata.get("user_id"),
                         }
                         print(f"Bridge Service: Chunk {chunk_id} ready for external consumption via API. Status: pending.")
 

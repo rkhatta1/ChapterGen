@@ -271,11 +271,14 @@ def start_chapter_generation_worker():
                     # Extract generation_config from the first chunk
                     generation_config = transcription_chunks[0].get('generation_config', {})
 
+
+                    user_id = transcription_chunks[0].get('user_id')
                     chapters = generate_chapters(video_id, all_segments, generation_config)
                     if chapters:
                         message = {
                             "video_id": video_id,
-                            "chapters": chapters
+                            "chapters": chapters,
+                            "user_id": user_id,
                         }
                         publish_kafka_message(KAFKA_TOPIC_CHAPTER_RESULTS, message)
 
