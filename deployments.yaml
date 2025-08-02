@@ -1,5 +1,47 @@
+# deployments.yaml
+
 ---
-# Deployment for Audio Transcription Worker
+# Deployment for Frontend Application
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend-deployment
+  labels:
+    app: frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+      - name: frontend
+        # IMPORTANT: Replace with your Docker Hub username
+        image: chapgen-frontend:v1
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 80
+          name: http-frontend
+---
+# Service for Frontend Application
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-service
+spec:
+  selector:
+    app: frontend
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+
+---
+# Deployment for YouTube Ingestion Service (Phase 1)
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -18,14 +60,14 @@ spec:
     spec:
       containers:
       - name: transcription-bridge-service-worker
-        image: transcription-bridge-service:v1
+        image: transcription-bridge-service:v1 # New image tag
         imagePullPolicy: IfNotPresent
         env:
           - name: KAFKA_BOOTSTRAP_SERVERS
             value: my-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092
           - name: KAFKA_TOPIC_AUDIO_CHUNKS
             value: audio-chunks
-          - name: KAFKA_TOPIC_TRANSCRIPTION_RESULTS
+          - name: KAFKA_TOPIC_TRANSCRIPTION_RESULTS # Still needed for local client to publish to
             value: transcription-results
           - name: MINIO_ENDPOINT
             value: minio:9000
@@ -53,7 +95,22 @@ spec:
             cpu: "500m"
 
 ---
-# Deployment for YouTube Ingestion Service
+# Service for Transcription Bridge
+apiVersion: v1
+kind: Service
+metadata:
+  name: transcription-bridge-service
+spec:
+  selector:
+    # This must match the labels on your transcription-bridge pods
+    app: transcription-bridge
+  ports:
+    - protocol: TCP
+      port: 8001
+      targetPort: 8001
+
+---
+# Deployment for Audio Transcription Worker (Phase 2)
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -72,7 +129,7 @@ spec:
     spec:
       containers:
       - name: youtube-ingestion
-        image: youtube-ingestion-service:v1
+        image: youtube-ingestion-service:v1 # Update image tag if needed
         imagePullPolicy: IfNotPresent
         env:
           - name: KAFKA_BOOTSTRAP_SERVERS
@@ -80,7 +137,7 @@ spec:
           - name: KAFKA_TOPIC_AUDIO_CHUNKS
             value: audio-chunks
           - name: MINIO_ENDPOINT
-            value: minio:9000
+            value: minio:9000 # MinIO is in default namespace
           - name: MINIO_ACCESS_KEY
             valueFrom:
               secretKeyRef:
@@ -96,7 +153,7 @@ spec:
           - name: CHUNK_DURATION_SECONDS
             value: "60"
           - name: OVERLAP_SECONDS
-            value: "16"
+            value: "10"
         ports:
         - containerPort: 8000
           name: http-api
@@ -107,6 +164,23 @@ spec:
           limits:
             memory: "512Mi"
             cpu: "500m"
+
+---
+# Service for YouTube Ingestion
+apiVersion: v1
+kind: Service
+metadata:
+  # This name MUST match the backend service name in your ingress.yaml
+  name: youtube-ingestion-service
+spec:
+  selector:
+    # This selector MUST match the labels of your ingestion pods
+    app: youtube-ingestion
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000
+
 ---
 # KafkaTopic for audio chunks
 apiVersion: kafka.strimzi.io/v1beta2
@@ -169,6 +243,8 @@ spec:
         image: chapter-generation-service:v1
         imagePullPolicy: IfNotPresent
         env:
+          - name: PYTHONUNBUFFERED
+            value: "1"
           - name: KAFKA_BOOTSTRAP_SERVERS
             value: my-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092
           - name: KAFKA_TOPIC_TRANSCRIPTION_RESULTS
@@ -178,7 +254,7 @@ spec:
           - name: KAFKA_CONSUMER_GROUP_ID
             value: chapter-generation-group
           - name: VIDEO_COMPLETION_TIMEOUT
-            value: "8"
+            value: "16"
           - name: GEMINI_API_KEY
             valueFrom:
               secretKeyRef:
@@ -199,8 +275,8 @@ metadata:
   name: minio-creds
 type: Opaque
 data:
-  accessKey: xyz123abc-minio-access # base64 encoded minio access key
-  secretKey: xyz123abc-minio-secret # base64 encoded minio secret key
+  accessKey: <base64_encoded_access_key> # base64 encoded minioadmin access key
+  secretKey: <base64_encoded_secret_key> # base64 encoded minioadmin secret key
 ---
 # Kubernetes Secret for Gemini API Key
 apiVersion: v1
@@ -209,7 +285,7 @@ metadata:
   name: gemini-api-key
 type: Opaque
 data:
-  apiKey: abc123xyz-your-key # Replace with your base64 encoded gemini API key
+  apiKey: <base64_encoded_api_key> # Replace with your base64 encoded API key
 ---
 # Deployment for Frontend Bridge Service
 apiVersion: apps/v1
@@ -239,6 +315,8 @@ spec:
             value: chapter-results
           - name: KAFKA_CONSUMER_GROUP_ID
             value: frontend-bridge-group
+          - name: DATABASE_SERVICE_URL # New environment variable for database service
+            value: http://database-service-service:8008 # Kubernetes service name
         ports:
         - containerPort: 8765
           name: websocket
@@ -262,6 +340,20 @@ spec:
     - protocol: TCP
       port: 8765
       targetPort: 8765
+
+---
+# Kubernetes Secret for PostgreSQL credentials
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-creds
+type: Opaque
+data:
+  # echo -n <username> | base64
+  # echo -n <password> | base64
+  username: <base64_encoded_username>
+  password: <base64_encoded_password>
+
 ---
 # Deployment for Database Service
 apiVersion: apps/v1
@@ -282,11 +374,23 @@ spec:
     spec:
       containers:
       - name: database-service-worker
-        image: database-service:v1
+        image: database-service:v1 # New image tag
         imagePullPolicy: IfNotPresent
         env:
-          - name: DATABASE_URL
-            value: postgresql://admin:password@postgres-service:5432/chapterdb # Internal Kubernetes service name for Postgres
+          - name: POSTGRES_USER
+            valueFrom:
+              secretKeyRef:
+                name: postgres-creds
+                key: username
+          - name: POSTGRES_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: postgres-creds
+                key: password
+          - name: POSTGRES_SERVER
+            value: postgres-service:5432 # The internal service name and port
+          - name: POSTGRES_DB
+            value: chapterdb
         ports:
         - containerPort: 8009
           name: http-db
@@ -341,9 +445,15 @@ spec:
         image: postgres:15-alpine
         env:
           - name: POSTGRES_USER
-            value: admin
+            valueFrom:
+              secretKeyRef:
+                name: postgres-creds
+                key: username
           - name: POSTGRES_PASSWORD
-            value: password
+            valueFrom:
+              secretKeyRef:
+                name: postgres-creds
+                key: password
           - name: POSTGRES_DB
             value: chapterdb
         ports:
@@ -352,9 +462,19 @@ spec:
         volumeMounts:
         - name: postgres-storage
           mountPath: /var/lib/postgresql/data
+        # --- MODIFIED READINESS PROBE ---
         readinessProbe:
           exec:
-            command: ["pg_isready", "-h", "localhost", "-p", "5432", "-U", "admin", "-d", "chapterdb"]
+            command:
+              - "pg_isready"
+              - "-h"
+              - "localhost"
+              - "-p"
+              - "5432"
+              - "-U"
+              - "$(POSTGRES_USER)" # Use the environment variable
+              - "-d"
+              - "chapterdb"
           initialDelaySeconds: 10
           periodSeconds: 5
           timeoutSeconds: 5

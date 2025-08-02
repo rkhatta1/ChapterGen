@@ -6,9 +6,14 @@ from pydantic import BaseModel
 import traceback
 from typing import List
 from fastapi.middleware.cors import CORSMiddleware
+import os
 
+POSTGRES_USER = os.getenv("POSTGRES_USER")
+POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD")
+POSTGRES_SERVER = os.getenv("POSTGRES_SERVER")
+POSTGRES_DB = os.getenv("POSTGRES_DB")
 
-DATABASE_URL = "postgresql://admin:password@postgres-service:5432/chapterdb"
+DATABASE_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_SERVER}/{POSTGRES_DB}"
 
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

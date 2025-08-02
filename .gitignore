@@ -8,3 +8,5 @@ kafka-single-node.yaml
 trans-worker/
 frontend/
 docker-compose.yaml
+chapgen.app-key.pem
+chapgen.app.pem
