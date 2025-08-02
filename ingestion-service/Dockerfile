@@ -1,5 +1,5 @@
 # Dockerfile for Ingestion Service
-FROM python:3.9-slim-buster
+FROM python:3.9-slim-bullseye
 
 # Install system dependencies required for yt-dlp and ffmpeg
 RUN apt-get update && \

@@ -3,6 +3,9 @@ import json
 import websockets
 import httpx
 from aiokafka import AIOKafkaConsumer
+import traceback # Import traceback to print full errors
+
+print("--- [INIT] Starting frontend-bridge application ---")
 
 # In-memory dictionary to map user_id to WebSocket client
 connected_clients = {}
@@ -18,10 +21,9 @@ async def get_user_profile(access_token):
             )
         response.raise_for_status() # Raises an exception for bad responses (4xx or 5xx)
         profile_data = response.json()
-        print(f"Profile from Google: {profile_data}")
         return profile_data
     except httpx.RequestError as e:
-        print(f"Error fetching user profile: {e}")
+        print(f"--- [ERROR] Failed to fetch user profile from Google: {e} ---")
         return None
 
 async def get_or_create_user(profile):
@@ -30,12 +32,12 @@ async def get_or_create_user(profile):
         email = profile.get('email')
         name = profile.get('name')
         if not email or not name:
+            print("--- [ERROR] Profile is missing email or name ---")
             return None
 
         async with httpx.AsyncClient() as client:
             # Check if user exists
             response = await client.get(f"{DATABASE_SERVICE_URL}/users/by-email/{email}")
-            print(f"Database service response (get user): Status {response.status_code}, Body: {response.text}")
             if response.status_code == 200:
                 return response.json()
             
@@ -44,11 +46,10 @@ async def get_or_create_user(profile):
                 f"{DATABASE_SERVICE_URL}/users/",
                 json={"email": email, "name": name}
             )
-            print(f"Database service response (create user): Status {response.status_code}, Body: {response.text}")
         response.raise_for_status()
         return response.json()
     except httpx.RequestError as e:
-        print(f"Error creating or getting user: {e}")
+        print(f"--- [ERROR] Failed during database operation: {e} ---")
         return None
 
 async def kafka_consumer_task():
@@ -58,27 +59,36 @@ async def kafka_consumer_task():
         bootstrap_servers='my-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092',
         group_id="frontend_bridge_group",
         value_deserializer=lambda m: json.loads(m.decode('utf-8')),
-        auto_offset_reset='latest',
+        auto_offset_reset='earliest',
+        session_timeout_ms=30000,
+        heartbeat_interval_ms=10000
     )
     await consumer.start()
+    print("--- [KAFKA] Consumer started successfully. Listening for messages... ---")
     try:
         async for msg in consumer:
-            print(f"Consumed message from Kafka: {msg.value}")
+            print(f"--- [KAFKA] Consumed message: {msg.value} ---")
             user_id = msg.value.get("user_id")
             if user_id and user_id in connected_clients:
                 websocket = connected_clients[user_id]
-                message_to_send = json.dumps(msg.value)
+                # Notify the frontend that chapters are ready for processing
+                message_to_send = json.dumps({
+                    "type": "chapters_ready",
+                    "data": msg.value
+                })
                 await websocket.send(message_to_send)
     except Exception as e:
-        print(f"Kafka consumer error: {e}")
+        print(f"--- [CRITICAL KAFKA FAIL] Kafka consumer task failed: {e} ---")
+        traceback.print_exc()
     finally:
         await consumer.stop()
 
+
 async def register(websocket):
-    """Registers a new client, authenticates them, and keeps the connection open."""
+    """Registers a new client, authenticates them, and handles all communication."""
     user_id = None
     try:
-        # 1. Wait for the initial authentication message
+        # --- Authentication Handshake ---
         auth_message = await websocket.recv()
         auth_data = json.loads(auth_message)
         access_token = auth_data.get('access_token')
@@ -87,40 +97,61 @@ async def register(websocket):
             await websocket.close(code=1008, reason="Access token not provided")
             return
 
-        # 2. Get user profile and create/get user from DB
         profile = await get_user_profile(access_token)
         if not profile:
             await websocket.close(code=1011, reason="Invalid access token or profile fetch failed")
             return
-        
+
         user = await get_or_create_user(profile)
         if not user or 'id' not in user:
-            await websocket.close(code=1011, reason="Could not create or get user from DB or user object missing ID")
+            await websocket.close(code=1011, reason="Could not create or get user from DB")
             return
-        
+
         user_id = user['id']
         connected_clients[user_id] = websocket
-        print(f"Client connected and authenticated for user_id: {user_id}. Total clients: {len(connected_clients)}")
+        print(f"--- [WS] Client authenticated for user_id: {user_id}. Connection stable. ---")
 
-        # 3. Keep the connection open
+        # --- Listen for Messages from the Client ---
         async for message in websocket:
-            pass # We don't expect more messages from the client
+            try:
+                data = json.loads(message)
+                # Handle the status update message from the frontend
+                if data.get("type") == "status_update":
+                    video_id = data.get("video_id")
+                    status = data.get("status")
+                    if video_id and status:
+                        async with httpx.AsyncClient() as client:
+                            response = await client.put(
+                                f"{DATABASE_SERVICE_URL}/jobs/{video_id}/status",
+                                json={"status": status}
+                            )
+                            response.raise_for_status()
+                        
+                        print(f"--- [DB] Updated status for video_id {video_id} to {status} ---")
+            except json.JSONDecodeError:
+                print(f"--- [WS-ERROR] Received invalid JSON from user_id: {user_id} ---")
+            except Exception as e:
+                print(f"--- [WS-ERROR] Error processing message from user_id {user_id}: {e} ---")
 
     except websockets.exceptions.ConnectionClosed:
-        print(f"Client connection closed for user_id: {user_id}")
+        print(f"--- [WS] Connection closed for user_id: {user_id} ---")
+    except Exception as e:
+        print(f"--- [CRITICAL WS FAIL] An unexpected error occurred in the register function: {e} ---")
+        traceback.print_exc()
     finally:
         if user_id and user_id in connected_clients:
             del connected_clients[user_id]
-            print(f"Client disconnected for user_id: {user_id}. Total clients: {len(connected_clients)}")
+        print(f"--- [WS] Client disconnected for user_id: {user_id}. Total clients: {len(connected_clients)} ---")
+
 
 async def main():
     kafka_task = asyncio.create_task(kafka_consumer_task())
     async with websockets.serve(register, "0.0.0.0", 8765):
-        print("WebSocket server started on ws://0.0.0.0:8765")
+        print("--- [MAIN] WebSocket server started on ws://0.0.0.0:8765 ---")
         await asyncio.Future()  # Run forever
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("Server shutting down.")
+        print("--- [EXIT] Server shutting down. ---")

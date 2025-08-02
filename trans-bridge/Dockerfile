@@ -1,5 +1,5 @@
 # Dockerfile for Audio Transcription Worker (Local Whisper)
-FROM python:3.9-slim-buster
+FROM python:3.9-slim-bullseye
 
 # Install system dependencies required for Whisper (ffmpeg, build tools for some python packages)
 # libsndfile1 is often required by torchaudio on Debian-based systems.

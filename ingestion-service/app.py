@@ -6,13 +6,13 @@ from pathlib import Path
 import json
 import uuid
 import shutil
-import httpx
 
 from fastapi import FastAPI, Body
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, Dict
-    # Define fields as needed,import uvicorn
+import uvicorn
+import httpx
 
 # External client imports
 from kafka import KafkaProducer
@@ -22,12 +22,13 @@ from minio.error import S3Error
 # --- Minikube Deployment Configuration ---
 KAFKA_BOOTSTRAP_SERVERS = os.environ.get('KAFKA_BOOTSTRAP_SERVERS', 'my-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092')
 KAFKA_TOPIC_AUDIO_CHUNKS = os.environ.get('KAFKA_TOPIC_AUDIO_CHUNKS', 'audio-chunks')
-DATABASE_SERVICE_URL = "http://database-service-service:8008"
 
 MINIO_ENDPOINT = os.environ.get('MINIO_ENDPOINT', 'minio:9000') # MinIO is in default namespace
 MINIO_ACCESS_KEY = os.environ.get('MINIO_ACCESS_KEY')
 MINIO_SECRET_KEY = os.environ.get('MINIO_SECRET_KEY')
 MINIO_BUCKET_NAME = os.environ.get('MINIO_BUCKET_NAME', 'audio-chunks')
+DATABASE_SERVICE_URL = "http://database-service-service:8008"
+
 
 CHUNK_DURATION = int(os.environ.get('CHUNK_DURATION_SECONDS', '60'))  # seconds
 CHUNK_OVERLAP = int(os.environ.get('OVERLAP_SECONDS', '10'))  # seconds
@@ -103,28 +104,6 @@ def publish_kafka_message(topic: str, message: dict):
         print(f"Error publishing message to Kafka topic '{topic}': {e}")
         raise
 
-async def get_user_id_from_token(access_token: str):
-    """Get user ID from the database service using the access token."""
-    try:
-        async with httpx.AsyncClient() as client:
-            # Get profile from Google
-            headers = {"Authorization": f"Bearer {access_token}"}
-            response = await client.get("https://www.googleapis.com/oauth2/v1/userinfo", headers=headers)
-            response.raise_for_status()
-            profile = response.json()
-            email = profile.get("email")
-
-            if not email:
-                return None
-
-            # Get user from DB by email
-            response = await client.get(f"{DATABASE_SERVICE_URL}/users/by-email/{email}")
-            response.raise_for_status()
-            return response.json().get("id")
-    except httpx.RequestError as e:
-        print(f"Error getting user ID: {e}")
-        return None
-    
 def download_and_chunk_audio(youtube_url: str, user_id: int, generation_config: Optional[Dict] = None):
     video_id = youtube_url.split("v=")[-1].split("&")[0]
 
@@ -152,7 +131,7 @@ def download_and_chunk_audio(youtube_url: str, user_id: int, generation_config: 
     except Exception as e:
         print(f"Unexpected error during yt-dlp download: {e}")
         return False
-    
+
     ffprobe_cmd = [
         "ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(audio_path)
     ]
@@ -169,7 +148,7 @@ def download_and_chunk_audio(youtube_url: str, user_id: int, generation_config: 
     except Exception as e:
         print(f"Unexpected error during ffprobe duration check: {e}")
         return False
-    
+
     start_time = 0.0
     chunk_index = 0
 
@@ -202,7 +181,7 @@ def download_and_chunk_audio(youtube_url: str, user_id: int, generation_config: 
         except Exception as e:
             print(f"Unexpected error creating chunk {chunk_index}: {e}")
             return False
-        
+
         object_name = f"{video_id}/chunks/{chunk_filename}"
         try:
             minio_url = upload_chunk_to_minio(MINIO_BUCKET_NAME, chunk_path, object_name)
@@ -221,7 +200,7 @@ def download_and_chunk_audio(youtube_url: str, user_id: int, generation_config: 
             "start_time_sec": start_time,
             "end_time_sec": current_chunk_end_time_sec,
             "generation_config": generation_config or {}, # Pass config along
-            "user_id": user_id,
+            "user_id": user_id
         }
         try:
             publish_kafka_message(KAFKA_TOPIC_AUDIO_CHUNKS, message)
@@ -240,15 +219,16 @@ def download_and_chunk_audio(youtube_url: str, user_id: int, generation_config: 
         print(f"Error removing temp directory {temp_dir}: {e}")
     return True
 
-# --- Pydantic Models for Request Body ---                                                                                                               │
+# --- Pydantic Models for Request Body ---
 class GenerationConfig(BaseModel):
     creativity: Optional[str] = 'Neutral'
     segmentation_threshold: Optional[str] = 'Default'
-    access_token: Optional[str] = None  # For user authentication
 
 class ProcessRequest(BaseModel):
     youtube_url: str
-    generation_config: GenerationConfig
+    generation_config: Optional[GenerationConfig] = Field(default_factory=dict)
+    access_token: str
+    video_details: dict
 
 # --- FastAPI App Definition ---
 app = FastAPI()
@@ -262,6 +242,46 @@ app.add_middleware(
     allow_methods=["*"]  # Allows all methods
 )
 
+async def get_user_id_from_token(access_token: str):
+    """Get user ID from the database service using the access token."""
+    try:
+        async with httpx.AsyncClient() as client:
+            # Get profile from Google
+            headers = {"Authorization": f"Bearer {access_token}"}
+            response = await client.get("https://www.googleapis.com/oauth2/v1/userinfo", headers=headers)
+            response.raise_for_status()
+            profile = response.json()
+            email = profile.get("email")
+
+            if not email:
+                return None, None
+
+            # Get user from DB by email
+            response = await client.get(f"{DATABASE_SERVICE_URL}/users/by-email/{email}")
+            response.raise_for_status()
+            user_data = response.json()
+            return user_data.get("id"), user_data.get("email")
+    except httpx.RequestError as e:
+        print(f"Error getting user ID: {e}")
+        return None, None
+
+async def check_job_exists(video_id: str):
+    """Checks if a job already exists for a given video_id."""
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{DATABASE_SERVICE_URL}/jobs/by-video-id/{video_id}")
+            if response.status_code == 200:
+                job_data = response.json()
+                # Check if the job has already been completed
+                if job_data.get("status") == "completed":
+                    return True, "This video has already been processed."
+                return True, "This video is currently being processed."
+            return False, ""
+    except httpx.RequestError:
+        # If the database service is down or there's a network error, allow the job to proceed
+        # This is a fallback to ensure the service remains available
+        return False, ""
+
 @app.post("/process-youtube-url/")
 async def process_youtube_url_endpoint(request: ProcessRequest):
     """
@@ -270,18 +290,40 @@ async def process_youtube_url_endpoint(request: ProcessRequest):
     print(f"Received request to process URL: {request.youtube_url}")
     print(f"Generation config: {request.generation_config}")
     
-    access_token = request.generation_config.access_token
+    access_token = request.access_token
     if not access_token:
         return {"status": "failure", "message": "Access token is required."}
 
-    user_id = await get_user_id_from_token(access_token)
+    user_id, user_email = await get_user_id_from_token(access_token)
     if not user_id:
         return {"status": "failure", "message": "Could not authenticate user."}
+
+    video_id = request.video_details["id"]
+    exists, message = await check_job_exists(video_id)
+    if exists:
+        return {"status": "failure", "message": message}
+
+
+    # Create a job in the database
+    try:
+        async with httpx.AsyncClient() as client:
+            job_data = {
+                "video_id": video_id,
+                "title": request.video_details["snippet"]["title"],
+                "description": request.video_details["snippet"]["description"],
+                "thumbnail_url": request.video_details["snippet"]["thumbnails"]["high"]["url"],
+                "owner_email": user_email
+            }
+            response = await client.post(f"{DATABASE_SERVICE_URL}/jobs/", json=job_data)
+            response.raise_for_status()
+    except httpx.RequestError as e:
+        return {"status": "failure", "message": f"Could not create job in database: {e}"}
 
     # Convert Pydantic model to dict for downstream processing
     config_dict = request.generation_config.dict() if request.generation_config else {}
 
-    success = download_and_chunk_audio(request.youtube_url, user_id, generation_config=config_dict)    
+    success = download_and_chunk_audio(request.youtube_url, user_id=user_id, generation_config=config_dict)
+    
     if success:
         return {"status": "success", "message": "Audio ingestion and chunking initiated."}
     else:
