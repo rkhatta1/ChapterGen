@@ -1,28 +1,28 @@
-# audio-chunk-bridge/app.py
 import os
 import json
 from pathlib import Path
 import shutil
 import time
-from fastapi import FastAPI, Response, HTTPException
+from fastapi import FastAPI, Response, HTTPException, Body
 import uvicorn
 import asyncio
-import uuid # For generating a unique worker ID for claims
+import uuid
 
-# External client imports
-from aiokafka import AIOKafkaConsumer
+# --- Kafka Producer Added ---
+from aiokafka import AIOKafkaProducer, AIOKafkaConsumer
 from minio import Minio
 from minio.error import S3Error
 
 # --- Configuration ---
 KAFKA_BOOTSTRAP_SERVERS = os.environ.get('KAFKA_BOOTSTRAP_SERVERS', 'my-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092')
 KAFKA_TOPIC_AUDIO_CHUNKS = os.environ.get('KAFKA_TOPIC_AUDIO_CHUNKS', 'audio-chunks')
+# --- New Topic for Results ---
+KAFKA_TOPIC_TRANSCRIPTION_RESULTS = os.environ.get('KAFKA_TOPIC_TRANSCRIPTION_RESULTS', 'transcription-results')
 
 MINIO_ENDPOINT = os.environ.get('MINIO_ENDPOINT', 'minio:9000')
 MINIO_ACCESS_KEY = os.environ.get('MINIO_ACCESS_KEY')
 MINIO_SECRET_KEY = os.environ.get('MINIO_SECRET_KEY')
 MINIO_BUCKET_NAME = os.environ.get('MINIO_BUCKET_NAME', 'audio-chunks')
-
 
 # --- MinIO Client Setup ---
 minio_client = None
@@ -30,24 +30,28 @@ def get_minio_client():
     global minio_client
     if minio_client is None:
         if not MINIO_ACCESS_KEY or not MINIO_SECRET_KEY:
-            raise ValueError("MINIO_ACCESS_KEY and MINIO_SECRET_KEY must be set as environment variables for MinIO connection.")
+            raise ValueError("MINIO_ACCESS_KEY and MINIO_SECRET_KEY must be set.")
         print(f"Initializing MinIO Client for: {MINIO_ENDPOINT}")
-        minio_client = Minio(
-            MINIO_ENDPOINT,
-            access_key=MINIO_ACCESS_KEY,
-            secret_key=MINIO_SECRET_KEY,
-            secure=False
-        )
+        minio_client = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY, secure=False)
     return minio_client
 
-# In-memory storage for pending chunks.
-pending_chunks = {}
+# --- Kafka Producer Setup ---
+kafka_producer = None
+async def get_kafka_producer():
+    global kafka_producer
+    if kafka_producer is None:
+        print("Initializing Kafka Producer for transcription results...")
+        producer = AIOKafkaProducer(
+            bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+            value_serializer=lambda v: json.dumps(v).encode('utf-8')
+        )
+        await producer.start()
+        kafka_producer = producer
+    return kafka_producer
 
-# Lock to prevent race conditions when multiple transcribers claim a chunk simultaneously.
-claim_lock = asyncio.Lock()
-
-# --- FastAPI App Definition ---
 app = FastAPI()
+pending_chunks = {}
+claim_lock = asyncio.Lock()
 
 @app.get("/audio-chunks/{chunk_id}")
 async def get_audio_chunk(chunk_id: str):
@@ -117,6 +121,32 @@ async def mark_chunk_processed(chunk_id: str, claimed_by: str = None):
     print(f"Chunk {chunk_id} marked as processed and cleaned up.")
     return {"status": "success", "message": f"Chunk {chunk_id} marked as processed."}
 
+# --- NEW ENDPOINT TO RECEIVE TRANSCRIPTION RESULTS ---
+@app.post("/chunks/{chunk_id}/transcribed")
+async def receive_transcription_results(chunk_id: str, results: dict = Body(...)):
+    """
+    Receives transcription results from a local transcriber and publishes them to Kafka.
+    """
+    chunk_info = pending_chunks.get(chunk_id)
+    if not chunk_info:
+        raise HTTPException(status_code=404, detail="Chunk not found or already processed.")
+
+    producer = await get_kafka_producer()
+    try:
+        await producer.send_and_wait(KAFKA_TOPIC_TRANSCRIPTION_RESULTS, results)
+        print(f"Successfully published transcription for chunk {chunk_id} to Kafka.")
+    except Exception as e:
+        print(f"Error publishing transcription for chunk {chunk_id} to Kafka: {e}")
+        raise HTTPException(status_code=500, detail="Failed to publish results to Kafka.")
+
+    # Clean up the processed chunk
+    chunk_info["status"] = "completed"
+    file_path = Path(chunk_info['local_chunk_path'])
+    if file_path.exists():
+        shutil.rmtree(file_path.parent, ignore_errors=True)
+    del pending_chunks[chunk_id]
+    print(f"Chunk {chunk_id} marked as processed and cleaned up.")
+    return {"status": "success", "message": f"Results for chunk {chunk_id} received and published."}
 
 # Background task to consume Kafka messages
 async def consume_kafka_chunks():
@@ -127,7 +157,7 @@ async def consume_kafka_chunks():
         bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
         group_id='audio-chunk-bridge-group',
         value_deserializer=lambda m: json.loads(m.decode('utf-8')),
-        auto_offset_reset='latest'
+        auto_offset_reset='earliest'
     )
     await consumer.start()
 
@@ -172,8 +202,16 @@ async def consume_kafka_chunks():
 @app.on_event("startup")
 async def startup_event():
     get_minio_client() # Initialize MinIO client on startup
+    await get_kafka_producer() # Initialize Kafka producer on startup
     asyncio.create_task(consume_kafka_chunks())
     print("Bridge Service: Startup tasks initiated.")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    producer = await get_kafka_producer()
+    if producer:
+        await producer.stop()
+        print("Bridge Service: Kafka producer stopped.")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8001)
