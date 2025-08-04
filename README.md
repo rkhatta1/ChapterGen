@@ -37,7 +37,7 @@ At its heart, ChapGen is an asynchronous, event-driven system built on a microse
 Here's a bird's-eye view of the data flow:
 
 <div align="center">
-<img src="https://github.com/rkhatta1/ChapterGen/images/chapgen-arch.svg"> 
+<img src="https://github.com/rkhatta1/ChapterGen/blob/main/images/chapgen-arch.svg"> 
 </div>
 
 #### The Players:
