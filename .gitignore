@@ -1,5 +1,7 @@
 .env
 deploymentsv2.yaml
+deployments.yaml
+production-issuer.yaml
 errors/
 Temp/
 *.log
@@ -10,3 +12,4 @@ frontend/
 docker-compose.yaml
 chapgen.app-key.pem
 chapgen.app.pem
+minio-deployment.yaml
