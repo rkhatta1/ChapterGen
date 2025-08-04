@@ -48,21 +48,21 @@ def transcribe_audio_chunk(audio_file_path: Path):
 
 
 def process_chunk(chunk_data: dict):
-    chunk_id = chunk_data['chunk_id']
-    original_metadata = chunk_data['metadata']
-
+    # --- CORRECTED CODE ---
+    # The chunk_data itself is the metadata. No need for a sub-key.
+    chunk_id = chunk_data.get('chunk_id')
     print(f"Processing claimed chunk: {chunk_id}")
     download_url = f"{BRIDGE_SERVICE_URL}/audio-chunks/{chunk_id}"
-    
+
     temp_dir = Path(f"/tmp/{chunk_id}")
     temp_dir.mkdir(parents=True, exist_ok=True)
-    local_audio_path = temp_dir / original_metadata['chunk_filename']
+    local_audio_path = temp_dir / chunk_data.get('chunk_filename')
 
     try:
         print(f"Downloading from {download_url}")
         response = requests.get(download_url, stream=True)
         response.raise_for_status()
-        
+
         with open(local_audio_path, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
@@ -71,10 +71,10 @@ def process_chunk(chunk_data: dict):
         transcript_segments = transcribe_audio_chunk(local_audio_path)
 
         if transcript_segments:
-            result_message = {
-                # ... (construct the result message as before) ...
-            }
-            # --- SEND RESULTS BACK TO BRIDGE VIA HTTP POST ---
+            # The result message is the original chunk_data with the segments added.
+            result_message = chunk_data.copy()
+            result_message['segments'] = transcript_segments
+
             submit_url = f"{BRIDGE_SERVICE_URL}/chunks/{chunk_id}/transcribed"
             print(f"Submitting results to {submit_url}")
             response = requests.post(submit_url, json=result_message)
