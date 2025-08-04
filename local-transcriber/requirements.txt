@@ -1,4 +1,4 @@
 requests
-kafka-python
 openai-whisper
 torch
+uuid
