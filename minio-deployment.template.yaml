@@ -11,7 +11,7 @@ spec:
     - ReadWriteOnce
   resources:
     requests:
-      storage: 5Gi # You can adjust this size based on your needs. Minikube's default StorageClass should handle this.
+      storage: 5Gi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -40,15 +40,9 @@ spec:
             - ":9001" # MinIO Console Port
           env:
             - name: MINIO_ROOT_USER
-              valueFrom:
-                secretKeyRef:
-                  name: minio-creds
-                  key: accessKey
+              value: <minio-access-key-plaintext>
             - name: MINIO_ROOT_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: minio-creds
-                  key: secretKey
+              value: <minio-secret-key-plaintext>
             - name: MINIO_SERVER_URL # Important for bucket creation if using minio client
               value: "http://minio.default.svc.cluster.local:9000"
           ports:

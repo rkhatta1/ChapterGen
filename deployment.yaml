@@ -1,5 +1,3 @@
-# deployments.yaml
-
 ---
 # Deployment for Frontend Application
 apiVersion: apps/v1
@@ -21,7 +19,7 @@ spec:
       containers:
       - name: frontend
         # IMPORTANT: Replace with your Docker Hub username
-        image: chapgen-frontend:v1
+        image: username/chapgen-frontend:v1
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 80
@@ -41,7 +39,6 @@ spec:
       targetPort: 80
 
 ---
-# Deployment for YouTube Ingestion Service (Phase 1)
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -58,33 +55,35 @@ spec:
       labels:
         app: transcription-bridge
     spec:
+      hostAliases:
+      - ip: "169.254.169.254"
+        hostnames:
+        - "metadata.google.internal"
       containers:
       - name: transcription-bridge-service-worker
-        image: transcription-bridge-service:v1 # New image tag
-        imagePullPolicy: IfNotPresent
+        image: username/transcription-bridge-service:v1
+        imagePullPolicy: Always
         env:
+          - name: GCP_PROJECT_ID
+            value: "<your-gcp-project-id>"
+          - name: BRIDGE_PUBLIC_URL
+            value: "http://<your-gce-vm-external-ip>:8001"
           - name: KAFKA_BOOTSTRAP_SERVERS
             value: my-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092
           - name: KAFKA_TOPIC_AUDIO_CHUNKS
             value: audio-chunks
-          - name: KAFKA_TOPIC_TRANSCRIPTION_RESULTS # Still needed for local client to publish to
+          - name: KAFKA_TOPIC_TRANSCRIPTION_RESULTS
             value: transcription-results
           - name: MINIO_ENDPOINT
             value: minio:9000
           - name: MINIO_ACCESS_KEY
-            valueFrom:
-              secretKeyRef:
-                name: minio-creds
-                key: accessKey
+            value: <minio-access-key-in-plaintext>
           - name: MINIO_SECRET_KEY
-            valueFrom:
-              secretKeyRef:
-                name: minio-creds
-                key: secretKey
+            value: <minio-secret-key-in-plaintext>
           - name: MINIO_BUCKET_NAME
             value: audio-chunks
         ports:
-        - containerPort: 8001 # Port for FastAPI to expose chunks
+        - containerPort: 8001
           name: http-bridge
         resources:
           requests:
@@ -101,6 +100,7 @@ kind: Service
 metadata:
   name: transcription-bridge-service
 spec:
+  type: ClusterIP
   selector:
     # This must match the labels on your transcription-bridge pods
     app: transcription-bridge
@@ -129,7 +129,7 @@ spec:
     spec:
       containers:
       - name: youtube-ingestion
-        image: youtube-ingestion-service:v1 # Update image tag if needed
+        image: username/youtube-ingestion-service:v1
         imagePullPolicy: IfNotPresent
         env:
           - name: KAFKA_BOOTSTRAP_SERVERS
@@ -139,15 +139,9 @@ spec:
           - name: MINIO_ENDPOINT
             value: minio:9000 # MinIO is in default namespace
           - name: MINIO_ACCESS_KEY
-            valueFrom:
-              secretKeyRef:
-                name: minio-creds
-                key: accessKey
+            value: <minio-access-key-in-plaintext>
           - name: MINIO_SECRET_KEY
-            valueFrom:
-              secretKeyRef:
-                name: minio-creds
-                key: secretKey
+            value: <minio-secret-key-in-plaintext>
           - name: MINIO_BUCKET_NAME
             value: audio-chunks
           - name: CHUNK_DURATION_SECONDS
@@ -240,7 +234,7 @@ spec:
     spec:
       containers:
       - name: chapter-generation-worker
-        image: chapter-generation-service:v1
+        image: username/chapter-generation-service:v1
         imagePullPolicy: IfNotPresent
         env:
           - name: PYTHONUNBUFFERED
@@ -275,8 +269,8 @@ metadata:
   name: minio-creds
 type: Opaque
 data:
-  accessKey: <base64_encoded_access_key> # base64 encoded minioadmin access key
-  secretKey: <base64_encoded_secret_key> # base64 encoded minioadmin secret key
+  accessKey: <key> # base64 encoded minioadmin access key
+  secretKey: <key> # base64 encoded minioadmin secret key
 ---
 # Kubernetes Secret for Gemini API Key
 apiVersion: v1
@@ -285,7 +279,7 @@ metadata:
   name: gemini-api-key
 type: Opaque
 data:
-  apiKey: <base64_encoded_api_key> # Replace with your base64 encoded API key
+  apiKey: <api-key> # Replace with your base64 encoded API key
 ---
 # Deployment for Frontend Bridge Service
 apiVersion: apps/v1
@@ -306,7 +300,7 @@ spec:
     spec:
       containers:
       - name: frontend-bridge-service
-        image: frontend-bridge:v1
+        image: username/frontend-bridge:v1
         imagePullPolicy: IfNotPresent
         env:
           - name: KAFKA_BOOTSTRAP_SERVERS
@@ -351,8 +345,8 @@ type: Opaque
 data:
   # echo -n <username> | base64
   # echo -n <password> | base64
-  username: <base64_encoded_username>
-  password: <base64_encoded_password>
+  username: <username>
+  password: <password>
 
 ---
 # Deployment for Database Service
@@ -374,7 +368,7 @@ spec:
     spec:
       containers:
       - name: database-service-worker
-        image: database-service:v1 # New image tag
+        image: username/database-service:v1 # New image tag
         imagePullPolicy: IfNotPresent
         env:
           - name: POSTGRES_USER
@@ -462,7 +456,6 @@ spec:
         volumeMounts:
         - name: postgres-storage
           mountPath: /var/lib/postgresql/data
-        # --- MODIFIED READINESS PROBE ---
         readinessProbe:
           exec:
             command:
@@ -472,7 +465,7 @@ spec:
               - "-p"
               - "5432"
               - "-U"
-              - "$(POSTGRES_USER)" # Use the environment variable
+              - "$(POSTGRES_USER)"
               - "-d"
               - "chapterdb"
           initialDelaySeconds: 10

@@ -1,15 +1,16 @@
-# ingress.yaml
-
-# Ingress for all services that DO NOT need a URL rewrite
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: chapgen-main-ingress
+  name: chaptergen-main-ingress
+  namespace: default
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
 spec:
+  ingressClassName: nginx
   tls:
   - hosts:
-    - chapgen.app # Make sure this matches your domain
-    secretName: chapgen-com-tls # Make sure this matches your secret
+    - chapgen.app
+    secretName: chapgen-app-tls
   rules:
   - host: chapgen.app
     http:
@@ -36,19 +37,20 @@ spec:
             port:
               number: 8765
 ---
-# Separate, dedicated Ingress for the database service that needs a rewrite
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: chapgen-db-ingress
+  name: chaptergen-db-ingress
+  namespace: default
   annotations:
-    # This annotation now ONLY applies to this Ingress resource
     nginx.ingress.kubernetes.io/rewrite-target: /$2
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
 spec:
+  ingressClassName: nginx
   tls:
   - hosts:
     - chapgen.app
-    secretName: chapgen-com-tls
+    secretName: chapgen-app-tls
   rules:
   - host: chapgen.app
     http:
