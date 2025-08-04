@@ -1,107 +1,70 @@
 <div align="center">
+<h1 align="center">ChapGen</h1>
+<p align="center">
+<strong>AI-powered YouTube chapter generation, built on a fully cloud-native, event-driven architecture.</strong>
+<br />
+<br />
+</p>
 <span style="margin-top: 10px; width: 4rem; margin-right: 0.5rem;"><img alt="Static Badge" src="https://img.shields.io/badge/Python-3776AB?style=flat&logo=python&logoColor=%23ffffff&logoSize=auto"></span>
 <span style="margin-top: 10px; width: 4rem; margin-right: 0.5rem;"><img alt="Static Badge" src="https://img.shields.io/badge/Kubernetes-f3f3f3?style=flat&logo=kubernetes&logoSize=auto"></span>
-<span style="margin-top: 10px; width: 4rem; margin-right: 0.5rem;"><img alt="Static Badge" src="https://img.shields.io/badge/Minio-61DAFB?style=flat&logo=minio&logoColor=%23000000&logoSize=auto"></span>
+<span style="margin-top: 10px; width: 4rem; margin-right: 0.5rem;"><img alt="Static Badge" src="https://img.shields.io/badge/MinIO-61DAFB?style=flat&logo=minio&logoColor=%23000000&logoSize=auto"></span>
 <span style="margin-top: 10px; width: 4rem; margin-right: 0.5rem;"><img alt="Static Badge" src="https://img.shields.io/badge/Docker-2496ED?style=flat&logo=docker&logoColor=%23ffffff&logoSize=auto"></span>
 <span style="margin-top: 10px; width: 4rem; margin-right: 0.5rem;"><img alt="Static Badge" src="https://img.shields.io/badge/Kafka-20BEFF?style=flat&logo=apachekafka&logoColor=%23fffff&logoSize=auto"></span>
-<!-- <span style="margin-top: 10px; width: 4rem; margin-right: 0.5rem;"><img alt="Static Badge" src="https://img.shields.io/badge/PostgreSQL-4169E1?style=flat&logo=postgresql&logoColor=%23ffffff&logoSize=auto"></span> -->
 <span style="margin-top: 10px; width: 4rem; margin-right: 0.5rem;"><img alt="Static Badge" src="https://img.shields.io/badge/Gemini-8E75B2?style=flat&logo=googlegemini&logoColor=%23ffffff&logoSize=auto"></span>
 <span style="margin-top: 10px; width: 4rem; margin-right: 0.5rem;"><img alt="Static Badge" src="https://img.shields.io/badge/HuggingFace-040404?style=flat&logo=huggingface&logoColor=%23FFD21E&logoSize=auto"></span>
+<span style="margin-top: 10px; width: 4rem; margin-right: 0.5rem;"><img alt="Static Badge" src="https://img.shields.io/badge/GitHub Actions-2088FF?style=flat&logo=githubactions&logoColor=%23ffffff&logoSize=auto"></span>
+<span style="margin-top: 10px; width: 4rem; margin-right: 0.5rem;"><img alt="Static Badge" src="https://img.shields.io/badge/Nginx-009639?style=flat&logo=nginx&logoColor=%23ffffff&logoSize=auto"></span>
+<span style="margin-top: 10px; width: 4rem; margin-right: 0.5rem;"><img alt="Static Badge" src="https://img.shields.io/badge/Google Cloud-4285F4?style=flat&logo=googlecloud&logoColor=%23ffffff&logoSize=auto"></span>
 </br>
-<div style="font-size: 2.5rem; margin-bottom: 1rem;"><strong><h1>ChapGen - An AI YouTube chapter generator</h1></strong></div>
 </div>
 
-## Project Overview
+-----
 
-Well, YouTube's creator studio already has a baked in feature for generating chapters, but it is quite lack luster when it comes to granularity and control over the semantics of the chapters that it generates. Hence, this project exists.
+## What's This All About?
 
-It is still under development. This is the repo for the project's backend infrastructure. Check the frontend repo out [here.](https://github.com/rkhatta1/ChapterGenFrontend)
+Let's be real, manually adding chapters to YouTube videos is a drag. While YouTube Studio has a feature for this, it's often too generic and lacks fine-grained control. ChapGen is a tool that solves this problem by using AI to intelligently analyze a video's transcript and generate meaningful, semantic chapters.
 
-## Local Development Setup
+But this project is more than just a cool tool. It's a showcase of a complete, production-grade, cloud-native system built from the ground up.
 
-### Steps for local setup of the kubernetes/kafka backend server:
+*(Add a UI GIF here\!)*
 
-1. Start the Minikube server
+-----
 
-    ```bash
-    minikube start --driver=kvm --memory=10240mb --cpus=8
-    ```
+## Architecture Deep Dive: How the Magic Happens
 
-2. Enable the addons
+At its heart, ChapGen is an asynchronous, event-driven system built on a microservices architecture. This isn't your standard monolith; every component is decoupled and communicates through a central message bus (Kafka). This makes the system resilient, scalable, and a ton of fun to build (ironically of course 🤠).
 
-    ```bash
-    eval $(minikube docker-env) && minikube addons enable metrics-server
-    ```
+Here's a bird's-eye view of the data flow:
 
-3. Create the kafka namespace and cluster
+<div align="center">
+<img src="https://github.com/rkhatta1/ChapterGen/images/chapgen-arch.svg"> 
+</div>
 
-    ```bash
-    kubectl create namespace kafka && kubectl create -f 'https://strimzi.io/install/latest?namespace=kafka' -n kafka
-    ```
+#### The Players:
 
-4. Then deploy the kafka-single-node bucket
+  * **Frontend**: A snappy UI built with **React** and **Vite**, allowing users to authenticate with their Google account and kick off the process. Check that repo out [here.](https://github.com/rkhatta1/ChapterGenFrontend)
+  * **Ingestion Service**: The front door to our backend. It takes a YouTube URL, uses `yt-dlp` to grab the audio, chunks it into manageable pieces, and fires off messages to Kafka for each chunk.
+  * **Transcription Bridge**: This service acts as the mission control for our transcription tasks. It consumes chunk messages from Kafka and triggers our serverless GPU worker for each one.
+  * **Serverless GPU Transcriber (The Star Player)**: This isn't an always-on, expensive VM. It's a **Google Cloud Run Job** with a GPU attached. It spins up in seconds when a job arrives, transcribes the audio using **OpenAI's Whisper** model, sends the results back, and then **scales down to zero**, costing absolutely nothing when it's idle.
+  * **Chapter Generation Service**: The brains of the operation. It consumes the completed transcriptions, intelligently formats a prompt, and uses the **Google Gemini API** to generate the final chapter list.
+  * **Database Service**: A simple FastAPI service that provides a REST API for managing user and job data in our **PostgreSQL** database.
+  * **Frontend Bridge**: Manages the persistent **WebSocket** connection with the client, pushing the final, generated chapters back to the UI in real-time.
 
-    ```bash
-    kubectl apply -f https://strimzi.io/examples/latest/kafka/kafka-single-node.yaml -n kafka
-    ```
+-----
 
-5. Create the minio keys. Replace the <access-key> and the <secret-key> with your desired keys.
+## Deployment & Infrastructure
 
-    ```bash
-    kubectl create secret generic minio-creds \
-    --from-literal=accessKey=<access-key> \
-    --from-literal=secretKey=<secret-key> \
-    --namespace default
-    ```
+This project runs on a professional-grade cloud setup, configured declaratively using Kubernetes manifests.
 
-6. Deploy the minio storage bucket
+  * **Cloud Provider**: **Google Cloud Platform (GCP)**.
+  * **Orchestration**: A lightweight **K3s** cluster runs on a single **Google Compute Engine** VM, managing all the core backend services.
+  * **Networking**: All traffic is routed through an **Nginx Ingress Controller**. SSL is handled automatically by **`cert-manager`**, which provisions free, trusted certificates from **Let's Encrypt**.
+  * **Serverless GPU**: The transcription workload is deployed as a **Google Cloud Run Job** with an attached GPU, providing a scalable and extremely cost-effective solution.
 
-    ```bash
-    kubectl apply -f minio-deployment.yaml
-    ```
+-----
 
-7. Once the minio pod is running, create the docker images of all the services
+## Future Work
 
-    ```bash
-    eval $(minikube docker-env) && cd chapter-generation-service && docker build -t chapter-generation-service:v1 . && cd .. && cd ingestion-service && docker build -t youtube-ingestion-service:v1 . && cd .. && cd trans-bridge && docker build -t transcription-bridge-service:v1 . && cd .. && cd frontend-bridge && docker build -t frontend-bridge:v1 . && cd .. && cd database-service && docker build -t database-service:v1 . && cd ..
-    ```
-
-8. After the images are done building, deploy the services
-
-    ```bash
-    kubectl apply -f deployments.yaml
-    ```
-
-9. Check the status of the services and the pods. Make sure all are in "Running" state.
-
-    ```bash
-    kubectl get pods --all-namespaces -w
-
-    # and
-
-    kubectl get svc --all-namespaces -w
-    ```
-
-10. Once all of them are running, forward all the ports. Grab the exact names of the pods from the previous command/s.
-
-    ```bash
-    kubectl port-forward svc/my-cluster-kafka-bootstrap 9092:9092 -n kafka
-    
-    kubectl port-forward svc/minio 9001:9001 -n default
-
-    kubectl port-forward <youtube-ingestion-deployment-name> 8000:8000
-
-    kubectl port-forward <transcription-bridge-deployment-name> 8001:8001
-
-    kubectl port-forward <frontend-bridge-deployment-name> 8765:8765
-    ```
-
-11. Finally, run the local-transcriber server and scale it horizontally as needed (run multiple instances in different tabs)
-
-    ```bash
-    cd local-transcriber && pip install -r requirements.txt && python3 app.py && cd ..
-    ```
-
-### Testing the chapter generation:
-
-- Set the [frontend](https://github.com/rkhatta1/ChapterGenFrontend) up.
+  * **CI/CD Pipeline**: Implement the full CI/CD pipeline with GitHub Actions to automate the building and deployment of services on every push to `main`.
+  * **Frontend UI/UX**: Clean up and enhance the user interface.
+  * **Monitoring**: Integrate monitoring tools to get better visibility into the health and performance of the services.
