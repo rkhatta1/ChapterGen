@@ -1,0 +1,106 @@
+name: Continuous Integration
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build-ingestion-service:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push ingestion-service
+        uses: docker/build-push-action@v4
+        with:
+          context: ./ingestion-service
+          file: ./ingestion-service/Dockerfile
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/youtube-ingestion-service:v1
+
+  build-transcription-bridge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push transcription-bridge-service
+        uses: docker/build-push-action@v4
+        with:
+          context: ./trans-bridge
+          file: ./trans-bridge/Dockerfile
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/transcription-bridge-service:v6
+
+  build-chapter-generation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push chapter-generation-service
+        uses: docker/build-push-action@v4
+        with:
+          context: ./chapter-generation-service
+          file: ./chapter-generation-service/Dockerfile
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/chapter-generation-service:v1
+
+  build-database-service:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push database-service
+        uses: docker/build-push-action@v4
+        with:
+          context: ./database-service
+          file: ./database-service/Dockerfile
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/database-service:v1
+
+  build-frontend-bridge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push frontend-bridge
+        uses: docker/build-push-action@v4
+        with:
+          context: ./frontend-bridge
+          file: ./frontend-bridge/Dockerfile
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/frontend-bridge:v1
