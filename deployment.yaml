@@ -11,6 +11,8 @@ spec:
   selector:
     matchLabels:
       app: frontend
+  strategy:
+    type: Recreate
   template:
     metadata:
       labels:
@@ -50,6 +52,8 @@ spec:
   selector:
     matchLabels:
       app: transcription-bridge
+  strategy:
+    type: Recreate
   template:
     metadata:
       labels:
@@ -122,6 +126,8 @@ spec:
   selector:
     matchLabels:
       app: youtube-ingestion
+  strategy:
+    type: Recreate
   template:
     metadata:
       labels:
@@ -227,6 +233,8 @@ spec:
   selector:
     matchLabels:
       app: chapter-generation
+  strategy:
+    type: Recreate
   template:
     metadata:
       labels:
@@ -293,6 +301,8 @@ spec:
   selector:
     matchLabels:
       app: frontend-bridge
+  strategy:
+    type: Recreate
   template:
     metadata:
       labels:
@@ -361,6 +371,8 @@ spec:
   selector:
     matchLabels:
       app: database-service
+  strategy:
+    type: Recreate
   template:
     metadata:
       labels:
@@ -429,6 +441,8 @@ spec:
   selector:
     matchLabels:
       app: postgres
+  strategy:
+    type: Recreate
   template:
     metadata:
       labels:
