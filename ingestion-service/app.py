@@ -106,7 +106,7 @@ def publish_kafka_message(topic: str, message: dict):
         print(f"Error publishing message to Kafka topic '{topic}': {e}")
         raise
 
-def download_and_chunk_audio(youtube_url: str, user_id: int, generation_config: Optional[Dict] = None):
+def download_and_chunk_audio(youtube_url: str, user_id: int, generation_config: Optional[Dict] = None, job_id: Optional[str] = None):
     video_id = youtube_url.split("v=")[-1].split("&")[0]
 
     print(f"\n ---- Processing YT URL: {youtube_url} (ID: {video_id}) ---- \n")
@@ -212,6 +212,7 @@ def download_and_chunk_audio(youtube_url: str, user_id: int, generation_config: 
 
         message = {
             "video_id": video_id,
+            "job_id": job_id,
             "chunk_id": chunk_id,
             "chunk_index": chunk_index,
             "total_chunks": total_chunks,
@@ -265,7 +266,8 @@ async def _run_ingestion_job(youtube_url: str, user_id: int,
             download_and_chunk_audio,
             youtube_url,
             user_id,
-            generation_config
+            generation_config,
+            job_id,
         )
         final_status = "completed" if success else "failed"
     except Exception as e:
