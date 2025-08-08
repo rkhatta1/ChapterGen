@@ -1,4 +1,5 @@
 # chapter-generation-service/app.py
+import collections
 import os
 import json
 import time
@@ -12,6 +13,7 @@ KAFKA_TOPIC_TRANSCRIPTION_RESULTS = os.environ.get('KAFKA_TOPIC_TRANSCRIPTION_RE
 KAFKA_TOPIC_CHAPTER_RESULTS = os.environ.get('KAFKA_TOPIC_CHAPTER_RESULTS', 'chapter-results')
 KAFKA_CONSUMER_GROUP_ID = os.environ.get('KAFKA_CONSUMER_GROUP_ID', 'chapter-generation-group')
 VIDEO_COMPLETION_TIMEOUT = int(os.environ.get('VIDEO_COMPLETION_TIMEOUT', '30')) # seconds
+VIDEO_MAX_WAIT = int(os.environ.get('VIDEO_MAX_WAIT', '600'))  # default 10 minutes
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 
 # --- Gemini API Setup ---
@@ -219,68 +221,134 @@ def start_chapter_generation_worker():
     producer = get_kafka_producer()
     print("Starting chapter generation worker loop...")
 
-    video_transcripts = {}
-    last_received_time = {}
+    # per-video state
+    video_state = {}  # video_id -> dict with keys: chunks(list), timestamps, expected_total, received_indices(set), first_received_time
 
     while True:
         try:
-            # Process incoming messages
             messages = consumer.poll(timeout_ms=1000, max_records=10)
+            now_ts = time.time()
+
             if messages:
                 for tp, consumer_records in messages.items():
                     for message in consumer_records:
                         transcription_result = message.value
                         video_id = transcription_result.get('video_id')
-                        
-                        if video_id:
-                            if video_id not in video_transcripts:
-                                video_transcripts[video_id] = []
-                            video_transcripts[video_id].append(transcription_result)
-                            last_received_time[video_id] = time.time()
-                            print(f"Received and stored transcript for video_id: {video_id} (start: {transcription_result.get('start_time_sec')})")
+                        if not video_id:
+                            continue
 
-            # Check for completed videos
-            completed_videos = []
-            for video_id, last_time in last_received_time.items():
-                if time.time() - last_time > VIDEO_COMPLETION_TIMEOUT:
-                    completed_videos.append(video_id)
-            
-            for video_id in completed_videos:
-                print(f"Video {video_id} timed out. Processing for chapter generation.")
-                transcription_chunks = video_transcripts.pop(video_id, [])
-                del last_received_time[video_id]
+                        state = video_state.get(video_id)
+                        if state is None:
+                            state = {
+                                "chunks": [],
+                                "received_indices": set(),
+                                "expected_total": None,
+                                "last_received_time": now_ts,
+                                "first_received_time": now_ts
+                            }
+                            video_state[video_id] = state
 
-                if transcription_chunks:
-                    # Sort chunks by their original start time
-                    transcription_chunks.sort(key=lambda x: x['start_time_sec'])
-                    
-                    # --- Assemble all segments from all chunks, making timestamps absolute ---
-                    all_segments = []
-                    for chunk in transcription_chunks:
-                        chunk_start_time = chunk.get('start_time_sec', 0)
-                        for segment in chunk.get('segments', []):
-                            # Convert relative segment timestamps to absolute video timestamps
-                            segment['start'] += chunk_start_time
-                            segment['end'] += chunk_start_time
-                            all_segments.append(segment)
+                        # Avoid duplicates by chunk_id or chunk_index
+                        chunk_index = transcription_result.get('chunk_index')
+                        chunk_id = transcription_result.get('chunk_id')
 
-                    if not all_segments:
-                        print(f"No segments found for video {video_id}. Skipping chapter generation.")
+                        # If we've already received this chunk id or index, ignore it
+                        skip = False
+                        if chunk_id and any(c.get('chunk_id') == chunk_id for c in state['chunks']):
+                            skip = True
+                        if chunk_index is not None and chunk_index in state['received_indices']:
+                            skip = True
+                        if skip:
+                            print(f"Ignoring duplicate transcription for video {video_id}, chunk {chunk_id}/{chunk_index}")
+                            state['last_received_time'] = now_ts
+                            continue
+
+                        # Store chunk
+                        state['chunks'].append(transcription_result)
+                        state['last_received_time'] = now_ts
+                        if chunk_index is not None:
+                            state['received_indices'].add(int(chunk_index))
+
+                        # Capture expected total chunks if supplied
+                        total_chunks = transcription_result.get('total_chunks')
+                        if total_chunks:
+                            state['expected_total'] = int(total_chunks)
+
+                        print(f"Stored transcription chunk for video_id: {video_id} (index={chunk_index}, total={state['expected_total']})")
+
+            # Decide which videos are ready
+            to_process = []
+
+            for video_id, state in list(video_state.items()):
+                now = time.time()
+
+                # Case A: we know expected_total, and we've received them all
+                if state['expected_total'] is not None:
+                    if len(state['received_indices']) >= state['expected_total']:
+                        print(f"All chunks received for video {video_id} ({len(state['received_indices'])}/{state['expected_total']})")
+                        to_process.append(video_id)
+                        continue
+                    # Otherwise, if we've waited longer than VIDEO_MAX_WAIT since first_received, force process
+                    if now - state['first_received_time'] > VIDEO_MAX_WAIT:
+                        print(f"Max wait exceeded for video {video_id}: forcing generation ({len(state['received_indices'])}/{state['expected_total']})")
+                        to_process.append(video_id)
                         continue
 
-                    # Extract generation_config from the first chunk
-                    generation_config = transcription_chunks[0].get('generation_config', {})
+                # Case B: expected_total unknown — fall back to inactivity timeout behavior
+                else:
+                    if now - state['last_received_time'] > VIDEO_COMPLETION_TIMEOUT:
+                        print(f"No new transcription for video {video_id} within inactivity timeout; processing with {len(state['chunks'])} chunks.")
+                        to_process.append(video_id)
+                        continue
+                    # Also apply a hard cap: if too much total time has passed since first chunk, force process
+                    if now - state['first_received_time'] > VIDEO_MAX_WAIT:
+                        print(f"Max wait exceeded (no total_chunks info) for video {video_id}; forcing generation.")
+                        to_process.append(video_id)
+                        continue
 
+            # Process ready videos
+            for video_id in to_process:
+                state = video_state.pop(video_id, None)
+                if not state:
+                    continue
 
-                    user_id = transcription_chunks[0].get('user_id')
-                    chapters = generate_chapters(video_id, all_segments, generation_config)
-                    if chapters:
-                        message = {
-                            "video_id": video_id,
-                            "chapters": chapters,
-                            "user_id": user_id,
+                transcription_chunks = state['chunks']
+                if not transcription_chunks:
+                    print(f"No transcription chunks found for video {video_id}; skipping.")
+                    continue
+
+                # --- Sort chunks by start_time_sec or chunk_index if present ---
+                transcription_chunks.sort(key=lambda x: (x.get('start_time_sec', float('inf')),
+                                                       x.get('chunk_index', float('inf'))))
+
+                # Assemble absolute timestamps for segments
+                all_segments = []
+                for chunk in transcription_chunks:
+                    chunk_start_time = chunk.get('start_time_sec', 0) or 0
+                    for segment in chunk.get('segments', []):
+                        # convert relative to absolute
+                        seg = {
+                            "text": segment.get('text'),
+                            "start": segment.get('start', 0) + chunk_start_time,
+                            "end": segment.get('end', 0) + chunk_start_time
                         }
-                        publish_kafka_message(KAFKA_TOPIC_CHAPTER_RESULTS, message)
+                        all_segments.append(seg)
+
+                if not all_segments:
+                    print(f"No segments for video {video_id} — skipping chapter generation.")
+                    continue
+
+                generation_config = transcription_chunks[0].get('generation_config', {})
+
+                user_id = transcription_chunks[0].get('user_id')
+                chapters = generate_chapters(video_id, all_segments, generation_config)
+                if chapters:
+                    message = {
+                        "video_id": video_id,
+                        "chapters": chapters,
+                        "user_id": user_id,
+                    }
+                    publish_kafka_message(KAFKA_TOPIC_CHAPTER_RESULTS, message)
 
         except KafkaError as e:
             print(f"CRITICAL KAFKA ERROR in chapter generation worker main loop: {e}")

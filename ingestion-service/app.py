@@ -149,6 +149,22 @@ def download_and_chunk_audio(youtube_url: str, user_id: int, generation_config: 
         print(f"Unexpected error during ffprobe duration check: {e}")
         return False
 
+    # Calculate step size and total_chunks ahead of the chunking loop
+    step = CHUNK_DURATION - CHUNK_OVERLAP
+    if step <= 0:
+        print("Invalid chunking configuration: CHUNK_DURATION must be > CHUNK_OVERLAP")
+        return False
+
+    # compute total number of chunks by simulating the loop
+    _total = 0
+    _temp_start = 0.0
+    while _temp_start < total_duration:
+        _total += 1
+        _temp_start += step
+    total_chunks = _total
+    print(f"Computed total_chunks = {total_chunks} for duration {total_duration:.2f}s, "
+          f"chunk_duration={CHUNK_DURATION}, overlap={CHUNK_OVERLAP}")
+
     start_time = 0.0
     chunk_index = 0
 
@@ -195,6 +211,8 @@ def download_and_chunk_audio(youtube_url: str, user_id: int, generation_config: 
         message = {
             "video_id": video_id,
             "chunk_id": chunk_id,
+            "chunk_index": chunk_index,
+            "total_chunks": total_chunks,
             "chunk_filename": chunk_filename,
             "chunk_url": minio_url,
             "start_time_sec": start_time,
@@ -208,7 +226,7 @@ def download_and_chunk_audio(youtube_url: str, user_id: int, generation_config: 
             print(f"Failed to publish Kafka message for chunk {chunk_id}: {e}")
             pass
 
-        start_time += CHUNK_DURATION - CHUNK_OVERLAP
+        start_time += step
         chunk_index += 1
 
     print(f"\n ---- Cleaning up temp directory: {temp_dir} ---- \n")
