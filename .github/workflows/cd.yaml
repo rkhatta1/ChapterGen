@@ -18,10 +18,36 @@ jobs:
           username: ${{ secrets.VPS_USERNAME }}
           key: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
           script: |
-            echo "--- Deploying new images to Kubernetes ---"
-            sudo kubectl rollout restart deployment youtube-ingestion-deployment
-            sudo kubectl rollout restart deployment transcription-bridge-deployment
-            sudo kubectl rollout restart deployment chapter-generation-deployment
-            sudo kubectl rollout restart deployment database-service-deployment
-            sudo kubectl rollout restart deployment frontend-bridge-deployment
-            echo "--- Rollout complete ---"
+            set -euo pipefail
+
+            echo "---- Continuous Deployment: patching images using CI head SHA ----"
+            TAG="${{ github.event.workflow_run.head_sha }}"
+            IMAGE_PREFIX="${{ secrets.DOCKERHUB_USERNAME }}"
+            KUBE_NAMESPACE="${{ secrets.K8S_NAMESPACE || 'default' }}"
+
+            echo "Using image tag: ${TAG}"
+            echo "Image prefix: ${IMAGE_PREFIX}"
+            echo "Kubernetes namespace: ${KUBE_NAMESPACE}"
+
+            # List of deployment -> image repository name mapping
+            # Update this list if your image repository names or deployment names differ.
+            declare -A DEPLOY_MAP=(
+              ["youtube-ingestion-deployment"]="${IMAGE_PREFIX}/youtube-ingestion-service"
+              ["transcription-bridge-deployment"]="${IMAGE_PREFIX}/transcription-bridge-service"
+              ["chapter-generation-deployment"]="${IMAGE_PREFIX}/chapter-generation-service"
+              ["database-service-deployment"]="${IMAGE_PREFIX}/database-service"
+              ["frontend-bridge-deployment"]="${IMAGE_PREFIX}/frontend-bridge"
+            )
+
+            for DEPLOY in "${!DEPLOY_MAP[@]}"; do
+              IMG="${DEPLOY_MAP[$DEPLOY]}:${TAG}"
+              echo "Patching deployment ${DEPLOY} to use image ${IMG}..."
+              # Patch the first container image in the pod template (safer if container
+              # names inside pods are unknown); adjust if your containers are not at index 0.
+              sudo kubectl -n "${KUBE_NAMESPACE}" patch deployment "${DEPLOY}" --type='json' -p="[ { \"op\": \"replace\", \"path\": \"/spec/template/spec/containers/0/image\", \"value\": \"${IMG}\" } ]"
+
+              echo "Waiting for rollout of ${DEPLOY}..."
+              sudo kubectl -n "${KUBE_NAMESPACE}" rollout status deployment/"${DEPLOY}" --timeout=120s
+            done
+
+            echo "---- Deployment complete ----"

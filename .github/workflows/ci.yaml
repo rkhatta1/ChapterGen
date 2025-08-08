@@ -23,7 +23,9 @@ jobs:
           context: ./ingestion-service
           file: ./ingestion-service/Dockerfile
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/youtube-ingestion-service:v1
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/youtube-ingestion-service:${{ github.sha }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/youtube-ingestion-service:latest
 
   build-transcription-bridge:
     runs-on: ubuntu-latest
@@ -43,7 +45,9 @@ jobs:
           context: ./trans-bridge
           file: ./trans-bridge/Dockerfile
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/transcription-bridge-service:v6
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/transcription-bridge-service:${{ github.sha }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/transcription-bridge-service:latest
 
   build-chapter-generation:
     runs-on: ubuntu-latest
@@ -63,7 +67,9 @@ jobs:
           context: ./chapter-generation-service
           file: ./chapter-generation-service/Dockerfile
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/chapter-generation-service:v1
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/chapter-generation-service:${{ github.sha }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/chapter-generation-service:latest
 
   build-database-service:
     runs-on: ubuntu-latest
@@ -83,7 +89,9 @@ jobs:
           context: ./database-service
           file: ./database-service/Dockerfile
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/database-service:v1
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/database-service:${{ github.sha }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/database-service:latest
 
   build-frontend-bridge:
     runs-on: ubuntu-latest
@@ -103,4 +111,6 @@ jobs:
           context: ./frontend-bridge
           file: ./frontend-bridge/Dockerfile
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/frontend-bridge:v1
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/frontend-bridge:${{ github.sha }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/frontend-bridge:latest
