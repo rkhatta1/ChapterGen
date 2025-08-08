@@ -6,3 +6,4 @@ yt-dlp
 requests
 fastapi-cors
 httpx
+asyncio
