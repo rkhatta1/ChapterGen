@@ -72,8 +72,12 @@ async def kafka_consumer_task():
             if user_id and user_id in connected_clients:
                 websocket = connected_clients[user_id]
                 # Notify the frontend that chapters are ready for processing
+                job_id = msg.value.get("job_id")
+                video_id = msg.value.get("video_id")
                 message_to_send = json.dumps({
                     "type": "chapters_ready",
+                    "job_id": job_id,
+                    "video_id": video_id,
                     "data": msg.value
                 })
                 await websocket.send(message_to_send)

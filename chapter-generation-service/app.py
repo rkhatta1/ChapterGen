@@ -343,8 +343,10 @@ def start_chapter_generation_worker():
                 user_id = transcription_chunks[0].get('user_id')
                 chapters = generate_chapters(video_id, all_segments, generation_config)
                 if chapters:
+                    job_id = transcription_chunks[0].get('job_id')
                     message = {
                         "video_id": video_id,
+                        "job_id": job_id,
                         "chapters": chapters,
                         "user_id": user_id,
                     }
