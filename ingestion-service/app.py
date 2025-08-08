@@ -5,9 +5,11 @@ import time
 from pathlib import Path
 import json
 import uuid
+from uuid import uuid4
 import shutil
-
-from fastapi import FastAPI, Body
+import asyncio
+from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Body, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, Dict
@@ -237,6 +239,50 @@ def download_and_chunk_audio(youtube_url: str, user_id: int, generation_config: 
         print(f"Error removing temp directory {temp_dir}: {e}")
     return True
 
+# new helper: background runner for the blocking ingestion work
+async def _run_ingestion_job(youtube_url: str, user_id: int,
+                             generation_config: dict, job_id: str):
+    """
+    Background runner that:
+      - sets job status -> processing
+      - runs blocking download_and_chunk_audio in a thread
+      - updates job status -> completed/failed
+    """
+    # mark job as processing in DB (best-effort)
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.patch(
+                f"{DATABASE_SERVICE_URL}/jobs/{job_id}",
+                json={"status": "processing"},
+                timeout=30.0
+            )
+    except Exception as e:
+        print(f"Warning: failed to set job {job_id} to processing: {e}")
+
+    try:
+        # Run the blocking function in a thread so we don't block the event loop
+        success = await asyncio.to_thread(
+            download_and_chunk_audio,
+            youtube_url,
+            user_id,
+            generation_config
+        )
+        final_status = "completed" if success else "failed"
+    except Exception as e:
+        print(f"Background ingestion job {job_id} raised exception: {type(e).__name__}: {e}")
+        final_status = "failed"
+
+    # update final status in DB (best-effort)
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.patch(
+                f"{DATABASE_SERVICE_URL}/jobs/{job_id}",
+                json={"status": final_status},
+                timeout=30.0
+            )
+    except Exception as e:
+        print(f"Warning: failed to update final status for job {job_id}: {e}")
+
 # --- Pydantic Models for Request Body ---
 class GenerationConfig(BaseModel):
     creativity: Optional[str] = 'Neutral'
@@ -300,52 +346,70 @@ async def check_job_exists(video_id: str):
         # This is a fallback to ensure the service remains available
         return False, ""
 
+# replace your existing endpoint with this updated async endpoint
 @app.post("/process-youtube-url/")
 async def process_youtube_url_endpoint(request: ProcessRequest):
     """
-    Receives a YouTube URL and optional generation config, then triggers the audio ingestion and chunking.
+    Accepts a YouTube URL and generation config, creates a queued job,
+    schedules ingestion in the background, and returns HTTP 202 with job_id.
     """
     print(f"Received request to process URL: {request.youtube_url}")
     print(f"Generation config: {request.generation_config}")
-    
+
     access_token = request.access_token
     if not access_token:
-        return {"status": "failure", "message": "Access token is required."}
+        return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
+                            content={"status": "failure", "message": "Access token is required."})
 
+    # authenticate user (via Google profile -> DB lookup)
     user_id, user_email = await get_user_id_from_token(access_token)
     if not user_id:
-        return {"status": "failure", "message": "Could not authenticate user."}
+        return JSONResponse(status_code=status.HTTP_401_UNAUTHORIZED,
+                            content={"status": "failure", "message": "Could not authenticate user."})
 
     video_id = request.video_details["id"]
     exists, message = await check_job_exists(video_id)
     if exists:
-        return {"status": "failure", "message": message}
+        return JSONResponse(status_code=status.HTTP_409_CONFLICT,
+                            content={"status": "failure", "message": message})
 
+    # Generate unique job_id (we return this immediately)
+    job_id = str(uuid4())
 
-    # Create a job in the database
+    # Create a job record in DB with status 'queued'
+    job_data = {
+        "id": job_id,
+        "video_id": video_id,
+        "title": request.video_details["snippet"]["title"],
+        "description": request.video_details["snippet"]["description"],
+        "thumbnail_url": request.video_details["snippet"]["thumbnails"]["high"]["url"],
+        "owner_email": user_email,
+        "status": "queued",
+    }
     try:
         async with httpx.AsyncClient() as client:
-            job_data = {
-                "video_id": video_id,
-                "title": request.video_details["snippet"]["title"],
-                "description": request.video_details["snippet"]["description"],
-                "thumbnail_url": request.video_details["snippet"]["thumbnails"]["high"]["url"],
-                "owner_email": user_email
-            }
-            response = await client.post(f"{DATABASE_SERVICE_URL}/jobs/", json=job_data)
+            response = await client.post(f"{DATABASE_SERVICE_URL}/jobs/", json=job_data, timeout=30.0)
             response.raise_for_status()
     except httpx.RequestError as e:
-        return {"status": "failure", "message": f"Could not create job in database: {e}"}
+        print(f"DB request error when creating job: {e}")
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            content={"status": "failure", "message": f"Could not create job in database: {e}"})
+    except Exception as e:
+        print(f"DB returned error when creating job: {e}")
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            content={"status": "failure", "message": f"Database returned error: {e}"})
 
-    # Convert Pydantic model to dict for downstream processing
+    # Convert generation_config to dict for background processing
     config_dict = request.generation_config.dict() if request.generation_config else {}
 
-    success = download_and_chunk_audio(request.youtube_url, user_id=user_id, generation_config=config_dict)
-    
-    if success:
-        return {"status": "success", "message": "Audio ingestion and chunking initiated."}
-    else:
-        return {"status": "failure", "message": "Failed to process YouTube URL."}
+    # Schedule background ingestion task (non-blocking)
+    asyncio.create_task(_run_ingestion_job(request.youtube_url, user_id, config_dict, job_id))
+
+    # Return early with 202 Accepted and job_id
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={"status": "accepted", "job_id": job_id, "message": "Job queued."}
+    )
 
 
 if __name__ == "__main__":
