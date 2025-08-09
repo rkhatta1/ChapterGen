@@ -26,7 +26,7 @@ Let's be real, manually adding chapters to YouTube videos is a drag. While YouTu
 
 But this project is more than just a cool tool. It's a showcase of a complete, production-grade, cloud-native system built from the ground up.
 
-*(Add a UI GIF here\!)*
+<img src="https://github.com/rkhatta1/ChapterGen/blob/main/public_assets/ChapGen.gif" width="1280" height="720" />
 
 -----
 
