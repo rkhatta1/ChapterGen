@@ -65,7 +65,7 @@ This project runs on a professional-grade cloud setup, configured declaratively 
 
 ## Future Work
 
-  ~~* **CI/CD Pipeline**: Implement the full CI/CD pipeline with GitHub Actions to automate the building and deployment of services on every push to `main`.~~
+  * ~~**CI/CD Pipeline**: Implement the full CI/CD pipeline with GitHub Actions to automate the building and deployment of services on every push to `main`.~~
   * **Frontend UI/UX**: Clean up and enhance the user interface.
   * **Features**: Add more conifg options, ability to schedule a cron job to generate the captions when a new video is published, and more.
   * **Monitoring**: Integrate monitoring tools to get better visibility into the health and performance of the services.
